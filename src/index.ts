@@ -1,26 +1,62 @@
-import { fromHono } from "chanfana";
-import { Hono } from "hono";
-import { TaskCreate } from "./endpoints/taskCreate";
-import { TaskDelete } from "./endpoints/taskDelete";
-import { TaskFetch } from "./endpoints/taskFetch";
-import { TaskList } from "./endpoints/taskList";
+// src/index.ts - NODE.JS SUNUCUSU İÇİN NİHAİ VERSİYON
 
-// Start a Hono app
-const app = new Hono<{ Bindings: Env }>();
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+import { serve } from '@hono/node-server';
+import { serveStatic } from '@hono/node-server/serve-static';
+import cron from 'node-cron';
+import 'dotenv/config';
 
-// Setup OpenAPI registry
-const openapi = fromHono(app, {
-	docs_url: "/",
+import type { AppHono } from './types.js';
+import projectEndpoints from './endpoints/projects.js';
+import rankingEndpoints from './endpoints/ranking.js';
+import homeEndpoints from './endpoints/home.js';
+import { updateAllProjectMetrics } from './scheduled-tasks/update-metrics.js';
+import { runConsistencyCheck } from './event-listener.js';
+import { pollForTokenCreatedEvents } from './blockchain-listener.js';
+import { dbClient, pool } from './db.js';
+import { appConfig } from './config.js';
+
+const app: AppHono = new Hono();
+
+app.use('*', cors({ origin: '*' }));
+app.use('*', async (c, next) => {
+    c.set('db', dbClient);
+    try {
+        await next();
+    } catch (e) {
+        console.error('[DB-MIDDLEWARE-ERROR]', e);
+        return c.json({ success: false, error: 'Database connection error.' }, 500);
+    }
 });
 
-// Register OpenAPI endpoints
-openapi.get("/api/tasks", TaskList);
-openapi.post("/api/tasks", TaskCreate);
-openapi.get("/api/tasks/:taskSlug", TaskFetch);
-openapi.delete("/api/tasks/:taskSlug", TaskDelete);
+// Logo/resim gibi statik dosyaları sunmak için
+app.use('/uploads/*', serveStatic({ root: './' }))
 
-// You may also register routes for non OpenAPI directly on Hono
-// app.get('/test', (c) => c.text('Hono!'))
+// --- API Rotaları ---
+app.route('/api/projects', projectEndpoints);
+app.route('/api/ranking', rankingEndpoints);
+app.route('/api/home', homeEndpoints);
 
-// Export the Hono app
-export default app;
+cron.schedule('*/10 * * * *', () => {
+    console.log('[CRON] Running: updateAllProjectMetrics');
+    updateAllProjectMetrics(dbClient, appConfig);
+});
+
+cron.schedule('0 */6 * * *', () => {
+    console.log('[CRON] Running: runConsistencyCheck');
+    runConsistencyCheck(appConfig, dbClient);
+});
+
+cron.schedule('*/15 * * * * *', () => {
+    pollForTokenCreatedEvents(dbClient, appConfig);
+});
+
+// --- Sunucuyu Başlat ---
+const port = Number(process.env.PORT || 3001);
+console.log(`✅ Backend server is running on port ${port}`);
+
+serve({ fetch: app.fetch, port });
+
+pool.on('connect', () => console.log('[DB-POOL] Connected to PostgreSQL.'));
+
