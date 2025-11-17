@@ -25,8 +25,8 @@ pool.on('error', (err) => console.error('[DB-ERROR]', err));
 const env = process.env as unknown as Env;
 const cache = new CacheService();
 
-const allowedOrigins = ['http://localhost:3000', 'https://lolhub.fun', 'https://lolhubfun.pages.dev'];
-app.use('*', cors({ origin: (origin) => (origin && allowedOrigins.includes(origin) ? origin : allowedOrigins[0]) }));
+const allowedOrigins = ['http://localhost:3000', 'https://rusakh.online', 'https://lolhubfun.pages.dev'];
+app.use('*', cors({ origin: allowedOrigins }));
 
 // Hono'nun express-fileupload ile uyumlu çalışması için bu şekilde ekliyoruz
 app.use('*', async (c, next) => {

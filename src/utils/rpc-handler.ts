@@ -4,6 +4,9 @@ import { createPublicClient, http } from 'viem';
 import { polygonAmoy, mainnet, bsc, avalanche, base, arbitrum } from 'viem/chains';
 import type { Env } from '../types.js';
 
+const FALLBACK_LOG_INTERVAL_MS = 60_000;
+const fallbackLogTimestamps: Record<number, number> = {};
+
 type AnyPublicClient = ReturnType<typeof createPublicClient>;
 
 const CHAIN_CONFIGS = {
@@ -40,22 +43,56 @@ const CHAIN_CONFIGS = {
   // Diğer ağlar...
 };
 
+function encodeBase64(value: string): string {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(value).toString('base64');
+  }
+  if (typeof btoa !== 'undefined') {
+    return btoa(value);
+  }
+  throw new Error('Base64 encoder is not available in this runtime.');
+}
+
+function extractInfuraProjectId(rpcUrl: string): string | null {
+  const match = /\/v3\/([^/?]+)/.exec(rpcUrl);
+  return match?.[1] ?? null;
+}
+
 // YARDIMCI FONKSİYON: Güvenli RPC URL'ini oluşturan fonksiyon
 function getAuthenticatedRpcUrl(env: Env, rpcUrlSecretName: keyof Env): string {
-    const rpcUrl = env[rpcUrlSecretName] as string | undefined;
-    const projectSecret = env.INFURA_PROJECT_SECRET as string | undefined;
+  const rpcUrl = env[rpcUrlSecretName] as string | undefined;
+  if (!rpcUrl) {
+    throw new Error(`CRITICAL: RPC URL secret '${rpcUrlSecretName}' is not defined in Cloudflare environment.`);
+  }
+  return rpcUrl;
+}
 
-    if (!rpcUrl) {
-        throw new Error(`CRITICAL: RPC URL secret '${rpcUrlSecretName}' is not defined in Cloudflare environment.`);
-    }
+function createAuthAwareTransport(rpcUrl: string, env: Env, timeout = 2000) {
+  const projectSecret = env.INFURA_PROJECT_SECRET;
+  const projectId = projectSecret ? extractInfuraProjectId(rpcUrl) : null;
 
-    // NOT: viem, URL içinde basic auth credential (https://:secret@host/...) kullanımına izin vermiyor.
-    // Bu yüzden şimdilik secret tanımlı olsa bile URL'i değiştirmiyoruz.
-    if (projectSecret) {
-        console.warn('[RPC-SECURITY] INFURA_PROJECT_SECRET is set but cannot be embedded into the URL with viem. Using plain RPC URL instead.');
-    }
+  if (projectSecret && projectId) {
+    const authHeader = `Basic ${encodeBase64(`${projectId}:${projectSecret}`)}`;
+    return http(rpcUrl, {
+      timeout,
+      fetch: (input, init) => {
+        const headers = new Headers(init?.headers || {});
+        headers.set('Authorization', authHeader);
+        return fetch(input, { ...init, headers });
+      },
+    });
+  }
 
-    return rpcUrl;
+  return http(rpcUrl, { timeout });
+}
+
+function logFallbackUsage(chainId: number) {
+  const now = Date.now();
+  const lastLogged = fallbackLogTimestamps[chainId] || 0;
+  if (now - lastLogged >= FALLBACK_LOG_INTERVAL_MS) {
+    console.log(`[RPC-HANDLER] Fallback RPC in use for chain ${chainId}.`);
+    fallbackLogTimestamps[chainId] = now;
+  }
 }
 
 
@@ -80,8 +117,8 @@ export async function getPublicClientWithFallback(chainId: number, env: Env, use
     }
 
     // Kullanıcı RPC başarısızsa fallback'e geç
-    const fallbackClient = await createFallbackClient(chainId, fallbackRpcUrl, config.timeout);
-    console.log(`[RPC-HANDLER] Fallback RPC in use for chain ${chainId}.`);
+    const fallbackClient = await createFallbackClient(chainId, fallbackRpcUrl, config.timeout, env);
+    logFallbackUsage(chainId);
     return fallbackClient;
     
   } catch (error) {
@@ -90,7 +127,7 @@ export async function getPublicClientWithFallback(chainId: number, env: Env, use
     // Son çare olarak sadece fallback client'ı daha uzun timeout ile dene
     console.warn(`[RPC-HANDLER-FALLBACK] Retrying with fallback RPC only...`);
     const fallbackRpcUrl = getAuthenticatedRpcUrl(env, config.fallbackRpcSecretName);
-    return createFallbackClient(chainId, fallbackRpcUrl, config.timeout * 2);
+    return createFallbackClient(chainId, fallbackRpcUrl, config.timeout * 2, env);
   }
 }
 
@@ -107,10 +144,10 @@ async function createUserClient(chainId: number, userRpcUrl: string | undefined,
   return client as AnyPublicClient;
 }
 
-async function createFallbackClient(chainId: number, rpcUrl: string, timeout: number): Promise<AnyPublicClient> {
+async function createFallbackClient(chainId: number, rpcUrl: string, timeout: number, env: Env): Promise<AnyPublicClient> {
   const client = createPublicClient({
     chain: getChainById(chainId),
-    transport: http(rpcUrl, { timeout })
+    transport: createAuthAwareTransport(rpcUrl, env, timeout)
   });
 
   await client.getBlockNumber(); // Bağlantıyı test et
@@ -127,4 +164,8 @@ function getChainById(chainId: number) {
     case arbitrum.id: return arbitrum;
     default: return polygonAmoy;
   }
+}
+
+export function createSecureHttpTransport(rpcUrl: string, env: Env, timeout = 2000) {
+  return createAuthAwareTransport(rpcUrl, env, timeout);
 }

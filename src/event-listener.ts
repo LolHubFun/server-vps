@@ -1,12 +1,13 @@
 // FAYL: worker/src/event-listener.ts - GÜÇLENDİRİLMİŞ REPLAY ATTACK KORUMASI İLE NİHAİ VERSİYON
 
 import type { Pool } from 'pg';
-import { createPublicClient, http, decodeFunctionData, getContract } from 'viem';
+import { createPublicClient, decodeFunctionData, getContract } from 'viem';
 import { polygonAmoy } from 'viem/chains';
 import { checkAndTriggerEvolution } from './evolution-engine.js';
 import type { CacheService } from './cache.service.js';
 import type { Env, EventWithMetadata } from './types.js';
 import { lolhubFunTokenABI } from './lib/abi/lolhubFunTokenABI.js';
+import { createSecureHttpTransport } from './utils/rpc-handler.js';
 
 const MILESTONES = [
     { target: BigInt("1000000000000000000"), name: "Milestone 1" },
@@ -58,7 +59,7 @@ export async function handleInvestedEvent(event: EventWithMetadata, db: Pool, ca
       [contractAddress.toLowerCase(), blockNumber.toString(), transactionHash, JSON.stringify(event.eventData)]
     );
 
-    const publicClient = createPublicClient({ chain: polygonAmoy, transport: http(env.INFURA_AMOY_RPC_URL) });
+    const publicClient = createPublicClient({ chain: polygonAmoy, transport: createSecureHttpTransport(env.INFURA_AMOY_RPC_URL, env) });
 
     try {
       const tx = await publicClient.getTransaction({ hash: transactionHash as `0x${string}` });
@@ -153,7 +154,7 @@ export async function runConsistencyCheck(db: Pool, cache: CacheService, env: En
 async function getProjectTotalRaised(contractAddress: string, env: Env): Promise<bigint> {
   const publicClient = createPublicClient({
     chain: polygonAmoy,
-    transport: http(env.INFURA_AMOY_RPC_URL)
+    transport: createSecureHttpTransport(env.INFURA_AMOY_RPC_URL, env)
   });
   
   const contract = getContract({

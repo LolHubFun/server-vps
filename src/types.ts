@@ -15,6 +15,7 @@ export interface Env {
     BASE_RPC_URL?: string;
     ARBITRUM_RPC_URL?: string;
     OPTIMISM_RPC_URL?: string;
+    INFURA_PROJECT_ID?: string;
     INFURA_PROJECT_SECRET?: string;
     FACTORY_CONTRACT_ADDRESS: string;
     WORKER_WALLET_PRIVATE_KEY: string;

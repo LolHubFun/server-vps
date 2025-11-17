@@ -1,9 +1,10 @@
 // packages/worker/src/services/metrics.service.ts - MULTICALL İLE GÜNCELLENMİŞ VERSİYON
 
-import { createPublicClient, http } from 'viem';
+import { createPublicClient } from 'viem';
 import { polygonAmoy, mainnet, bsc, avalanche, base, arbitrum, optimism, polygon } from 'viem/chains';
 import { lolhubFunTokenABI } from '../lib/abi/lolhubFunTokenABI.js';
 import type { Env } from '../types.js';
+import { createSecureHttpTransport } from '../utils/rpc-handler.js';
 
 export interface ProjectMetrics {
   contractAddress: string;
@@ -32,17 +33,26 @@ export async function calculateBatchMetrics(
 
   // Zincire göre client sağlayıcı
   const getClientForChain = (chainId?: number) => {
+    const withDefault = (primary?: string, fallback?: string) => primary || fallback;
+
     switch (chainId) {
-      case 1: return createPublicClient({ chain: mainnet, transport: http(env.INFURA_MAINNET_RPC_URL || env.INFURA_AMOY_RPC_URL) });
-      case 56: return createPublicClient({ chain: bsc, transport: http(env.BSC_RPC_URL || env.INFURA_AMOY_RPC_URL) });
-      case 137: return createPublicClient({ chain: polygon, transport: http(env.POLYGON_RPC_URL || env.INFURA_AMOY_RPC_URL) });
-      case 43114: return createPublicClient({ chain: avalanche, transport: http(env.AVAX_RPC_URL || env.INFURA_AMOY_RPC_URL) });
-      case 8453: return createPublicClient({ chain: base, transport: http(env.BASE_RPC_URL || env.INFURA_AMOY_RPC_URL) });
-      case 42161: return createPublicClient({ chain: arbitrum, transport: http(env.ARBITRUM_RPC_URL || env.INFURA_AMOY_RPC_URL) });
-      case 10: return createPublicClient({ chain: optimism, transport: http(env.OPTIMISM_RPC_URL || env.INFURA_AMOY_RPC_URL) });
+      case 1:
+        return createPublicClient({ chain: mainnet, transport: createSecureHttpTransport(withDefault(env.INFURA_MAINNET_RPC_URL, env.INFURA_AMOY_RPC_URL)!, env) });
+      case 56:
+        return createPublicClient({ chain: bsc, transport: createSecureHttpTransport(withDefault(env.BSC_RPC_URL, env.INFURA_AMOY_RPC_URL)!, env) });
+      case 137:
+        return createPublicClient({ chain: polygon, transport: createSecureHttpTransport(withDefault(env.POLYGON_RPC_URL, env.INFURA_AMOY_RPC_URL)!, env) });
+      case 43114:
+        return createPublicClient({ chain: avalanche, transport: createSecureHttpTransport(withDefault(env.AVAX_RPC_URL, env.INFURA_AMOY_RPC_URL)!, env) });
+      case 8453:
+        return createPublicClient({ chain: base, transport: createSecureHttpTransport(withDefault(env.BASE_RPC_URL, env.INFURA_AMOY_RPC_URL)!, env) });
+      case 42161:
+        return createPublicClient({ chain: arbitrum, transport: createSecureHttpTransport(withDefault(env.ARBITRUM_RPC_URL, env.INFURA_AMOY_RPC_URL)!, env) });
+      case 10:
+        return createPublicClient({ chain: optimism, transport: createSecureHttpTransport(withDefault(env.OPTIMISM_RPC_URL, env.INFURA_AMOY_RPC_URL)!, env) });
       case 80002:
       default:
-        return createPublicClient({ chain: polygonAmoy, transport: http(env.INFURA_AMOY_RPC_URL) });
+        return createPublicClient({ chain: polygonAmoy, transport: createSecureHttpTransport(env.INFURA_AMOY_RPC_URL, env) });
     }
   };
 

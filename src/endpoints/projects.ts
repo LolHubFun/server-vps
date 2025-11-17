@@ -1,4 +1,4 @@
-// packages/worker/src/endpoints/projects.ts - REPLY FUNKSİYASI İLƏ NİHAİ VERSİYA
+// packages/worker/src/endpoints/projects.ts - REPLY VE PRE-SAVE EKLENMİŞ NİHAİ VERSİYA
 
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
@@ -32,7 +32,7 @@ const projectListQuerySchema = z.object({
 const commentSchema = z.object({
     userAddress: z.string().startsWith('0x'),
     commentText: z.string().min(3).max(500),
-    parentCommentId: z.string().uuid().optional(), // <-- REPLY ÜÇÜN ƏLAVƏ EDİLDİ
+    parentCommentId: z.string().uuid().optional(),
     turnstileToken: z.string().min(5),
 });
 
@@ -50,6 +50,33 @@ const liveStreamSchema = z.object({
   message: z.string(),
   turnstileToken: z.string().min(5),
 });
+
+
+// =================== PRE-SAVE ENDPOINT (YENİ EKLENDİ) ===================
+projects.post('/pre-save', async (c) => {
+    const cache = c.get('cache');
+    try {
+        const body = await c.req.json();
+        const { txHash, creatorAddress, socials, name, symbol, logoUrl, turnstileToken } = body;
+
+        // Burada Turnstile token'ını doğrulayabiliriz (isteğe bağlı ama önerilir)
+
+        if (!txHash) {
+            return c.json({ success: false, error: 'Transaction hash is required.' }, 400);
+        }
+
+        // Veriyi cache'e 10 dakika süreyle kaydet
+        await cache.set(`presave:${txHash}`, { name, symbol, logoUrl, socials, creatorAddress }, 600);
+        
+        console.log(`[PRE-SAVE] Cached data for tx: ${txHash}`);
+        return c.json({ success: true, message: 'Pre-save data cached.' });
+
+    } catch (error: any) {
+        console.error('[API-PRESAVE-ERROR]', error.message);
+        return c.json({ success: false, error: 'Failed to process pre-save data.' }, 500);
+    }
+});
+
 
 // =================== PROYEKT LİSTƏSİ ===================
 projects.get('/', zValidator('query', projectListQuerySchema), async (c) => {
@@ -138,8 +165,6 @@ projects.get('/', zValidator('query', projectListQuerySchema), async (c) => {
     }
 });
 
-// ⚠️ ÖNƏMLİ: Daha spesifik route-lar əvvəl olmalıdır, ümumi route-lar sonra!
-
 // =================== BİR KOMMENTİN CAVABLARINI GƏTİRMƏK ===================
 projects.get('/:address/comments/:commentId/replies', async (c) => {
     const db = c.get('db') as Pool;
@@ -218,7 +243,6 @@ projects.post('/:address/comments', zValidator('json', commentSchema), async (c)
         const balance = await client.readContract({ address: projectAddress as `0x${string}`, abi: ERC20_BALANCE_OF_ABI, functionName: 'balanceOf', args: [userAddress as `0x${string}`] });
         if (balance === 0n) return c.json({ success: false, error: 'Yorum yapmak için bu projeden token sahibi olmalısınız.' }, 403);
 
-        // --- TƏHLÜKƏSİZLİK: DƏRİNLİK LİMİTİ ---
         if (parentCommentId) {
             const parentComment = await db.query('SELECT parent_comment_id FROM comments WHERE id = $1', [parentCommentId]);
             const parentCount = parentComment.rowCount ?? 0;
@@ -280,7 +304,7 @@ projects.post('/:address/set-live-stream', zValidator('json', liveStreamSchema),
     }
 });
 
-// =================== TEKİL PROYEKT DETAYI (ən sonuncu çünki ən ümumi route-dur) ===================
+// =================== TEKİL PROYEKT DETAYI ===================
 projects.get('/:address', async (c) => {
     const db = c.get('db') as Pool;
     const cache = c.get('cache');
