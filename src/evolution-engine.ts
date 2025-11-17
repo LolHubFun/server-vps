@@ -1,11 +1,8 @@
 // worker/src/evolution-engine.ts - Evrim tetikleyicisi ve mod mantığı
 
-import { neon, NeonQueryFunction } from '@neondatabase/serverless';
-import { createPublicClient, http } from 'viem';
-import { polygonAmoy } from 'viem/chains';
-import { CacheService } from './cache.service.js';
+import type { Pool } from 'pg';
+import type { CacheService } from './cache.service.js';
 import type { Env } from './types.js';
-import { lolhubFunTokenABI } from './lib/abi/lolhubFunTokenABI.js';
 
 interface ProjectRow {
   contract_address: string;
@@ -24,19 +21,21 @@ const MILESTONES_WEI = [
 
 export async function checkAndTriggerEvolution(
   contractAddress: string,
-  db: NeonQueryFunction<any, any>,
+  db: Pool,
+  cache: CacheService,
   env: Env
 ): Promise<boolean> {
   const lower = contractAddress.toLowerCase();
 
-  const rows = await db<ProjectRow[]>`
-    SELECT contract_address, evolution_mode, current_milestone_index, evolution_status, total_raised
-    FROM projects
-    WHERE contract_address = ${lower}
-      AND is_finalized = false
-      AND evolution_status = 'IDLE'
-    LIMIT 1;
-  `;
+  const { rows } = await db.query<ProjectRow>(
+    `SELECT contract_address, evolution_mode, current_milestone_index, evolution_status, total_raised
+       FROM projects
+       WHERE contract_address = $1
+         AND is_finalized = false
+         AND evolution_status = 'IDLE'
+       LIMIT 1`,
+    [lower]
+  );
 
   if (rows.length === 0) {
     return false;
@@ -53,40 +52,43 @@ export async function checkAndTriggerEvolution(
     return false;
   }
 
-  const updated = await db`
-    UPDATE projects
-    SET evolution_status = 'PROCESSING'
-    WHERE contract_address = ${lower}
-      AND evolution_status = 'IDLE'
-    RETURNING contract_address;
-  `;
+  const updateResult = await db.query(
+    `UPDATE projects
+       SET evolution_status = 'PROCESSING'
+     WHERE contract_address = $1
+       AND evolution_status = 'IDLE'
+     RETURNING contract_address`,
+    [lower]
+  );
 
-  if (updated.length === 0) {
+  if (updateResult.rowCount === 0) {
     return false;
   }
 
   try {
     await runEvolutionPipeline(project, db, env);
-    await db`
-      UPDATE projects
-      SET evolution_status = 'IDLE', current_milestone_index = current_milestone_index + 1
-      WHERE contract_address = ${lower};
-    `;
-    const cache = new CacheService(env);
+    await db.query(
+      `UPDATE projects
+         SET evolution_status = 'IDLE',
+             current_milestone_index = current_milestone_index + 1
+       WHERE contract_address = $1`,
+      [lower]
+    );
     await cache.clearProjectCache(lower);
     return true;
   } catch (error) {
     console.error('[EVOLUTION-ERROR]', error);
-    await db`
-      UPDATE projects
-      SET evolution_status = 'IDLE'
-      WHERE contract_address = ${lower};
-    `;
+    await db.query(
+      `UPDATE projects
+         SET evolution_status = 'IDLE'
+       WHERE contract_address = $1`,
+      [lower]
+    );
     return false;
   }
 }
 
-async function runEvolutionPipeline(project: ProjectRow, db: NeonQueryFunction<any, any>, env: Env) {
+async function runEvolutionPipeline(project: ProjectRow, db: Pool, env: Env) {
   // Placeholder: actual implementation would pick suggestions, call AI, update DB.
   console.log(`[EVOLUTION] Running pipeline for ${project.contract_address} in mode ${project.evolution_mode}`);
   // Example of pulling suggestions and updating project name/logo would go here.

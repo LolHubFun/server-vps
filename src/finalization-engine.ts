@@ -1,7 +1,14 @@
-import { createWalletClient, http } from 'viem';
-import { polygonAmoy } from 'viem/chains';
-import { getContract } from 'viem';
+import type { Pool } from 'pg';
+import { createWalletClient, getContract, http } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
+import { polygonAmoy } from 'viem/chains';
+import type { CacheService } from './cache.service.js';
+import type { Env } from './types.js';
+
+type FinalizationEnv = Env & {
+  db: Pool;
+  cache: CacheService;
+};
 
 // ABI'yi doğrudan buraya kopyalıyoruz
 const lolhubFunTokenABI = [
@@ -1107,14 +1114,7 @@ const lolhubFunTokenABI = [
   }
 ] as const;
 
-// This is a placeholder for the actual Environment type
-type Env = {
-  db: any; // Replace with your actual DB client type
-  ADMIN_EMERGENCY_WEBHOOK: string;
-  WORKER_WALLET_PRIVATE_KEY: string;
-};
-
-export async function processFinalizationSteps(projectAddress: string, env: Env) {
+export async function processFinalizationSteps(projectAddress: string, env: FinalizationEnv) {
   try {
     // ⭐ GÜVENLİ ANAHTAR YÖNETİMİ - CLOUDFLARE SECRETS'TEN
     const account = privateKeyToAccount(env.WORKER_WALLET_PRIVATE_KEY as `0x${string}`);
@@ -1128,7 +1128,7 @@ export async function processFinalizationSteps(projectAddress: string, env: Env)
     const contract = getContract({
       address: projectAddress as `0x${string}`,
       abi: lolhubFunTokenABI,
-      walletClient
+      client: walletClient
     });
     
     // Mevcut finalizasyon adımları...
@@ -1147,9 +1147,9 @@ export async function processFinalizationSteps(projectAddress: string, env: Env)
   }
 }
 
-async function scheduleEmergencyFinalization(projectAddress: string, env: Env) {
+async function scheduleEmergencyFinalization(projectAddress: string, env: FinalizationEnv) {
   // ⭐ ACİL DURUM İÇİN YÖNETİCİ ONAYI BEKLE
-  await env.db(
+  await env.db.query(
     'UPDATE projects SET finalization_status = $1, emergency_lock_reason = $2, emergency_lock_timestamp = NOW() WHERE contract_address = $3',
     ['NEEDS_EMERGENCY_APPROVAL', 'Key management issue during finalization', projectAddress.toLowerCase()]
   );

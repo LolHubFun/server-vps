@@ -1,19 +1,19 @@
 import { Hono } from 'hono';
+import type { Pool } from 'pg';
 import type { AppHono } from '../types.js';
-import { KVNamespace } from '@cloudflare/workers-types';
-import { NeonQueryFunction } from '@neondatabase/serverless';
+import type { CacheService } from '../cache.service.js';
 
 const ranking = new Hono() as AppHono;
 
 const fetchRankedProjects = async (
-    db: NeonQueryFunction,
-    cache: KVNamespace,
+    db: Pool,
+    cache: CacheService,
     sortBy: 'market_cap' | 'volume_24h',
     options: { chainId?: number; limit: number }
 ) => {
     const { chainId, limit } = options;
     const cacheKey = `ranking:${sortBy}:chain:${chainId ?? 'all'}:limit:${limit}:v8`;
-    const cached = await cache.get(cacheKey, { type: 'json' });
+    const cached = await cache.get(cacheKey);
     if (cached) return cached;
 
     // ✅ FIXED: Use different queries based on sortBy instead of db.raw()
@@ -21,50 +21,58 @@ const fetchRankedProjects = async (
     try {
         if (sortBy === 'market_cap') {
             if (typeof chainId === 'number') {
-                projects = await db`
-                    SELECT contract_address, current_name, current_symbol, current_logo_url,
-                           chain_id, chain_name, price_change_24h, market_cap, volume_24h
-                    FROM projects
-                    WHERE is_finalized = false AND chain_id = ${chainId}
-                    ORDER BY market_cap DESC NULLS LAST
-                    LIMIT ${limit}
-                `;
+                const result = await db.query(
+                    `SELECT contract_address, current_name, current_symbol, current_logo_url,
+                            chain_id, chain_name, price_change_24h, market_cap, volume_24h
+                     FROM projects
+                     WHERE is_finalized = false AND chain_id = $1
+                     ORDER BY market_cap DESC NULLS LAST
+                     LIMIT $2`,
+                    [chainId, limit]
+                );
+                projects = result.rows;
             } else {
-                projects = await db`
-                    SELECT contract_address, current_name, current_symbol, current_logo_url,
-                           chain_id, chain_name, price_change_24h, market_cap, volume_24h
-                    FROM projects
-                    WHERE is_finalized = false
-                    ORDER BY market_cap DESC NULLS LAST
-                    LIMIT ${limit}
-                `;
+                const result = await db.query(
+                    `SELECT contract_address, current_name, current_symbol, current_logo_url,
+                            chain_id, chain_name, price_change_24h, market_cap, volume_24h
+                     FROM projects
+                     WHERE is_finalized = false
+                     ORDER BY market_cap DESC NULLS LAST
+                     LIMIT $1`,
+                    [limit]
+                );
+                projects = result.rows;
             }
         } else {
             if (typeof chainId === 'number') {
-                projects = await db`
-                    SELECT contract_address, current_name, current_symbol, current_logo_url,
-                           chain_id, chain_name, price_change_24h, market_cap, volume_24h
-                    FROM projects
-                    WHERE is_finalized = false AND chain_id = ${chainId}
-                    ORDER BY volume_24h DESC NULLS LAST
-                    LIMIT ${limit}
-                `;
+                const result = await db.query(
+                    `SELECT contract_address, current_name, current_symbol, current_logo_url,
+                            chain_id, chain_name, price_change_24h, market_cap, volume_24h
+                     FROM projects
+                     WHERE is_finalized = false AND chain_id = $1
+                     ORDER BY volume_24h DESC NULLS LAST
+                     LIMIT $2`,
+                    [chainId, limit]
+                );
+                projects = result.rows;
             } else {
-                projects = await db`
-                    SELECT contract_address, current_name, current_symbol, current_logo_url,
-                           chain_id, chain_name, price_change_24h, market_cap, volume_24h
-                    FROM projects
-                    WHERE is_finalized = false
-                    ORDER BY volume_24h DESC NULLS LAST
-                    LIMIT ${limit}
-                `;
+                const result = await db.query(
+                    `SELECT contract_address, current_name, current_symbol, current_logo_url,
+                            chain_id, chain_name, price_change_24h, market_cap, volume_24h
+                     FROM projects
+                     WHERE is_finalized = false
+                     ORDER BY volume_24h DESC NULLS LAST
+                     LIMIT $1`,
+                    [limit]
+                );
+                projects = result.rows;
             }
         }
-        await cache.put(cacheKey, JSON.stringify(projects), { expirationTtl: 60 });
+        await cache.set(cacheKey, projects, 60);
         return projects;
     } catch (err) {
         // Fallback to last cached snapshot if query fails
-        const stale = await cache.get(cacheKey, { type: 'json' });
+        const stale = await cache.get(cacheKey);
         if (stale) return stale;
         throw err;
     }
@@ -72,7 +80,7 @@ const fetchRankedProjects = async (
 
 ranking.get('/', async (c) => {
     const db = c.get('db');
-    const cache = c.env.KV_CACHE;
+    const cache = c.get('cache');
 
     try {
         const limitParam = Number(c.req.query('limit') || '50');

@@ -1,11 +1,11 @@
 // FAYL: worker/src/event-listener.ts - GÜÇLENDİRİLMİŞ REPLAY ATTACK KORUMASI İLE NİHAİ VERSİYON
 
-import { NeonQueryFunction, neon } from '@neondatabase/serverless';
-import { createPublicClient, http, getContract, decodeFunctionData } from 'viem';
+import type { Pool } from 'pg';
+import { createPublicClient, http, decodeFunctionData, getContract } from 'viem';
 import { polygonAmoy } from 'viem/chains';
 import { checkAndTriggerEvolution } from './evolution-engine.js';
-import { CacheService } from './cache.service.js';
-import { Env, EventWithMetadata } from './types.js';
+import type { CacheService } from './cache.service.js';
+import type { Env, EventWithMetadata } from './types.js';
 import { lolhubFunTokenABI } from './lib/abi/lolhubFunTokenABI.js';
 
 const MILESTONES = [
@@ -15,7 +15,7 @@ const MILESTONES = [
 
 const processedEvents = new Map<string, { timestamp: number }>();
 
-export async function handleInvestedEvent(event: EventWithMetadata, env: Env) {
+export async function handleInvestedEvent(event: EventWithMetadata, db: Pool, cache: CacheService, env: Env) {
   if (processedEvents.size > 50) {
     const now = Date.now();
     for (const [key, value] of processedEvents.entries()) {
@@ -26,7 +26,6 @@ export async function handleInvestedEvent(event: EventWithMetadata, env: Env) {
   }
   
   const { blockNumber, transactionHash, logIndex, contractAddress } = event;
-  const db = neon(env.DATABASE_URL);
   const eventId = `${transactionHash}_${logIndex}`;
 
   if (processedEvents.has(eventId)) {
@@ -37,24 +36,27 @@ export async function handleInvestedEvent(event: EventWithMetadata, env: Env) {
   console.log(`[EVENT-HANDLER] Processing Invested event for ${contractAddress} at block ${blockNumber}`);
 
   try {
-    const dbCheck = await db`
-        SELECT 1 FROM project_events 
-        WHERE tx_hash = ${transactionHash} 
+    const existsResult = await db.query(
+      `SELECT 1 FROM project_events 
+        WHERE tx_hash = $1 
           AND event_name = 'Invested' 
-          AND contract_address = ${contractAddress.toLowerCase()}
-    `;
+          AND contract_address = $2`,
+      [transactionHash, contractAddress.toLowerCase()]
+    );
+    const existsCount = existsResult.rowCount ?? 0;
 
-    if (dbCheck.length > 0) {
+    if (existsCount > 0) {
         console.warn(`[DB-REPLAY-DETECTED] Event ${eventId} already exists in the database. Skipping.`);
         processedEvents.set(eventId, { timestamp: Date.now() });
         return;
     }
 
-    await db`
-      INSERT INTO project_events (contract_address, block_number, tx_hash, event_name, event_data) 
-      VALUES (${contractAddress.toLowerCase()}, ${blockNumber.toString()}, ${transactionHash}, 'Invested', ${JSON.stringify(event.eventData)})
-      ON CONFLICT DO NOTHING
-    `;
+    await db.query(
+      `INSERT INTO project_events (contract_address, block_number, tx_hash, event_name, event_data)
+       VALUES ($1, $2, $3, 'Invested', $4)
+       ON CONFLICT DO NOTHING`,
+      [contractAddress.toLowerCase(), blockNumber.toString(), transactionHash, JSON.stringify(event.eventData)]
+    );
 
     const publicClient = createPublicClient({ chain: polygonAmoy, transport: http(env.INFURA_AMOY_RPC_URL) });
 
@@ -65,14 +67,15 @@ export async function handleInvestedEvent(event: EventWithMetadata, env: Env) {
         const [_referrer, nameSuggestion, charSuggestion] = decoded.args as [string, string, string, any];
         const investorAddress = (tx as any).from as string;
         if ((nameSuggestion && nameSuggestion.trim().length > 0) || (charSuggestion && charSuggestion.trim().length > 0)) {
-          await db`
-            INSERT INTO suggestions (project_contract_address, suggester_address, name_suggestion, char_suggestion, created_at)
-            VALUES (${contractAddress.toLowerCase()}, ${investorAddress.toLowerCase()}, ${nameSuggestion || ''}, ${charSuggestion || ''}, NOW())
-            ON CONFLICT (project_contract_address, suggester_address) DO UPDATE SET
-              name_suggestion = EXCLUDED.name_suggestion,
-              char_suggestion = EXCLUDED.char_suggestion,
-              created_at = NOW()
-          `;
+          await db.query(
+            `INSERT INTO suggestions (project_contract_address, suggester_address, name_suggestion, char_suggestion, created_at)
+             VALUES ($1, $2, $3, $4, NOW())
+             ON CONFLICT (project_contract_address, suggester_address) DO UPDATE SET
+               name_suggestion = EXCLUDED.name_suggestion,
+               char_suggestion = EXCLUDED.char_suggestion,
+               created_at = NOW()`,
+            [contractAddress.toLowerCase(), investorAddress.toLowerCase(), nameSuggestion || '', charSuggestion || '']
+          );
           console.log(`[SUGGESTION] Saved suggestion from ${investorAddress} for ${contractAddress}`);
         }
       }
@@ -80,10 +83,9 @@ export async function handleInvestedEvent(event: EventWithMetadata, env: Env) {
       console.error(`[SUGGESTION-ERROR] Failed to process suggestions for tx ${transactionHash}:`, suggErr);
     }
 
-    const evolutionTriggered = await checkAndTriggerEvolution(contractAddress, db, env);
+    const evolutionTriggered = await checkAndTriggerEvolution(contractAddress, db, cache, env);
 
     if (evolutionTriggered) {
-        const cache = new CacheService(env);
         await cache.clearProjectCache(contractAddress.toLowerCase());
         console.log(`[CACHE] Evolution triggered - cleared cache for ${contractAddress.toLowerCase()}`);
     }
@@ -96,20 +98,19 @@ export async function handleInvestedEvent(event: EventWithMetadata, env: Env) {
   }
 }
 
-export async function runConsistencyCheck(env: Env) {
+export async function runConsistencyCheck(db: Pool, cache: CacheService, env: Env) {
   console.log('[CONSISTENCY-CHECK] Starting optimized consistency check');
-  const db = neon(env.DATABASE_URL);
 
   try {
-    const projects: any[] = await db`
-       SELECT contract_address, last_processed_block, current_milestone_index
-       FROM projects 
-       WHERE evolution_status = 'IDLE'
-       AND is_finalized = false
-       AND last_interaction_timestamp > NOW() - INTERVAL '7 days'
-       ORDER BY updated_at ASC
-       LIMIT 25
-    `;
+    const { rows: projects } = await db.query(
+      `SELECT contract_address, last_processed_block, current_milestone_index
+         FROM projects
+         WHERE evolution_status = 'IDLE'
+           AND is_finalized = false
+           AND last_interaction_timestamp > NOW() - INTERVAL '7 days'
+         ORDER BY updated_at ASC
+         LIMIT 25`
+    );
     
     console.log(`[CONSISTENCY-CHECK] Found ${projects.length} projects to check`);
 
@@ -136,7 +137,7 @@ export async function runConsistencyCheck(env: Env) {
     
     const evolutionPromises = projectsToEvolve.map((project, index) => {
       return new Promise(resolve => setTimeout(resolve, index * 2000)).then(() => 
-        checkAndTriggerEvolution(project.contract_address, db, env)
+        checkAndTriggerEvolution(project.contract_address, db, cache, env)
       );
     });
     

@@ -1,12 +1,13 @@
 // src/blockchain-listener.ts - NODE.JS İÇİN TAM VE NİHAİ VERSİYON (İMPORT YOLLARI DÜZELTİLDİ)
 
 import { parseAbiItem } from 'viem';
-import { NeonQueryFunction } from '@neondatabase/serverless';
+import type { Pool } from 'pg';
 
 // DİKKAT: TÜM İMPORT YOLLARININ SONUNA .js EKLENDİ
 import { getPublicClientWithFallback } from './utils/rpc-handler.js';
 import { verifyProxyContract } from './services/verification.service.js';
-import { CacheService } from './cache.service.js';
+import type { CacheService } from './cache.service.js';
+import type { Env } from './types.js';
 
 const evmTokenCreatedAbi = parseAbiItem('event TokenCreated(address indexed tokenAddress, address indexed implementationAddress, address indexed creator, string evolutionMode, uint256 chainId)');
 
@@ -22,7 +23,7 @@ function getChainInfoById(chainId: number): { id: number; name: string } {
     return { id: chainId, name: chains[chainId] || 'unknown' };
 }
 
-export async function pollForTokenCreatedEvents(db: NeonQueryFunction<false, false>, env: any) {
+export async function pollForTokenCreatedEvents(db: Pool, cache: CacheService, env: Env) {
     if (isPolling) {
         // console.log('[POLL] Polling already in progress. Skipping.'); // Çok fazla log olmaması için yorum satırı yapıldı
         return;
@@ -34,8 +35,8 @@ export async function pollForTokenCreatedEvents(db: NeonQueryFunction<false, fal
         if (!publicClient) throw new Error("RPC client could not be created.");
 
         // Son kontrol edilen bloğu veritabanından oku
-        const lastBlockResult = await db`SELECT value FROM app_state WHERE key = 'lastCheckedBlock'`;
-        let lastCheckedBlock = lastBlockResult.length > 0 ? BigInt(lastBlockResult[0].value) : 0n;
+        const { rows: lastBlockRows } = await db.query<{ value: string }>('SELECT value FROM app_state WHERE key = $1', ['lastCheckedBlock']);
+        let lastCheckedBlock = lastBlockRows.length > 0 ? BigInt(lastBlockRows[0].value) : 0n;
         
         const latestBlock = await publicClient.getBlockNumber();
         if (lastCheckedBlock === 0n) {
@@ -55,17 +56,17 @@ export async function pollForTokenCreatedEvents(db: NeonQueryFunction<false, fal
 
         if (logs.length > 0) {
             console.log(`[POLL] Found ${logs.length} new TokenCreated event(s).`);
-            const cache = new CacheService();
             for (const log of logs) {
                 await processEvmTokenCreated(log, db, env, cache);
             }
         }
 
         // Son kontrol edilen bloğu veritabanına kaydet
-        await db`
-            INSERT INTO app_state (key, value) VALUES ('lastCheckedBlock', ${latestBlock.toString()})
-            ON CONFLICT (key) DO UPDATE SET value = ${latestBlock.toString()};
-        `;
+        await db.query(
+            `INSERT INTO app_state (key, value) VALUES ($1, $2)
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+            ['lastCheckedBlock', latestBlock.toString()]
+        );
 
     } catch (e: any) {
         console.error("[POLL-FATAL] Polling failed:", e.message);
@@ -74,7 +75,7 @@ export async function pollForTokenCreatedEvents(db: NeonQueryFunction<false, fal
     }
 }
 
-async function processEvmTokenCreated(log: any, db: NeonQueryFunction<false, false>, env: any, cache: CacheService) {
+async function processEvmTokenCreated(log: any, db: Pool, env: Env, cache: CacheService) {
     try {
         const { tokenAddress, creator, evolutionMode, chainId } = log.args as any;
         const txHash = log.transactionHash;
@@ -90,32 +91,50 @@ async function processEvmTokenCreated(log: any, db: NeonQueryFunction<false, fal
 
             if (!preSaveData) {
                 console.error(`[PROCESS-ERROR] Standard mode but NO pre-save data in cache for tx: ${txHash}.`);
-                result = await db`
-                    INSERT INTO projects (contract_address, creator_address, evolution_mode, chain_id, chain_name, evolution_status, created_at)
-                    VALUES (${tokenAddress.toLowerCase()}, ${creator.toLowerCase()}, ${evolutionMode}, ${chainInfo.id}, ${chainInfo.name}, 'IDLE', NOW())
-                    ON CONFLICT (contract_address) DO NOTHING RETURNING *;
-                `;
+                result = await db.query(
+                    `INSERT INTO projects (contract_address, creator_address, evolution_mode, chain_id, chain_name, evolution_status, created_at)
+                     VALUES ($1, $2, $3, $4, $5, 'IDLE', NOW())
+                     ON CONFLICT (contract_address) DO NOTHING RETURNING *`,
+                    [tokenAddress.toLowerCase(), creator.toLowerCase(), evolutionMode, chainInfo.id, chainInfo.name]
+                );
             } else {
-                result = await db`
-                    INSERT INTO projects (contract_address, creator_address, evolution_mode, chain_id, chain_name, current_name, current_symbol, current_logo_url, website_url, twitter_url, telegram_url, discord_url, evolution_status, created_at)
-                    VALUES (${tokenAddress.toLowerCase()}, ${creator.toLowerCase()}, ${evolutionMode}, ${chainInfo.id}, ${chainInfo.name}, ${preSaveData.name}, ${preSaveData.symbol}, ${preSaveData.logoUrl}, ${preSaveData.socials?.website}, ${preSaveData.socials?.twitter}, ${preSaveData.socials?.telegram}, ${preSaveData.socials?.discord}, 'IDLE', NOW())
-                    ON CONFLICT (contract_address) DO UPDATE SET 
-                        current_name = EXCLUDED.current_name, current_symbol = EXCLUDED.current_symbol,
-                        current_logo_url = EXCLUDED.current_logo_url, updated_at = NOW()
-                    RETURNING *;
-                `;
+                result = await db.query(
+                    `INSERT INTO projects (contract_address, creator_address, evolution_mode, chain_id, chain_name, current_name, current_symbol, current_logo_url, website_url, twitter_url, telegram_url, discord_url, evolution_status, created_at)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'IDLE', NOW())
+                     ON CONFLICT (contract_address) DO UPDATE SET 
+                        current_name = EXCLUDED.current_name,
+                        current_symbol = EXCLUDED.current_symbol,
+                        current_logo_url = EXCLUDED.current_logo_url,
+                        updated_at = NOW()
+                     RETURNING *`,
+                    [
+                        tokenAddress.toLowerCase(),
+                        creator.toLowerCase(),
+                        evolutionMode,
+                        chainInfo.id,
+                        chainInfo.name,
+                        preSaveData.name,
+                        preSaveData.symbol,
+                        preSaveData.logoUrl,
+                        preSaveData.socials?.website,
+                        preSaveData.socials?.twitter,
+                        preSaveData.socials?.telegram,
+                        preSaveData.socials?.discord,
+                    ]
+                );
                 await cache.delete(`presave:${txHash}`);
             }
         } else { // Democracy or Chaos
             const temporaryName = evolutionMode === 'democracy' ? 'Democracy Project' : 'Chaos Project';
-            result = await db`
-                INSERT INTO projects (contract_address, creator_address, evolution_mode, chain_id, chain_name, current_name, evolution_status, created_at)
-                VALUES (${tokenAddress.toLowerCase()}, ${creator.toLowerCase()}, ${evolutionMode}, ${chainInfo.id}, ${chainInfo.name}, ${temporaryName}, 'IDLE', NOW())
-                ON CONFLICT (contract_address) DO NOTHING RETURNING *;
-            `;
+            result = await db.query(
+                `INSERT INTO projects (contract_address, creator_address, evolution_mode, chain_id, chain_name, current_name, evolution_status, created_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, 'IDLE', NOW())
+                 ON CONFLICT (contract_address) DO NOTHING RETURNING *`,
+                [tokenAddress.toLowerCase(), creator.toLowerCase(), evolutionMode, chainInfo.id, chainInfo.name, temporaryName]
+            );
         }
 
-        if (result && result.count > 0) {
+        if (result && result.rowCount && result.rowCount > 0) {
             console.log(`[DB-SUCCESS] Project saved: ${tokenAddress}`);
             
             try {

@@ -4,14 +4,22 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import type { AppHono } from '../types.js';
-import { createPublicClient, http, erc20Abi, recoverMessageAddress } from 'viem';
+import { createPublicClient, http } from 'viem';
+import { recoverMessageAddress } from 'viem/utils';
 import { polygonAmoy } from 'viem/chains';
-import { CacheService } from '../cache.service.js';
-import { appConfig } from '../config.js';
 import type { Pool } from 'pg';
 
+const ERC20_BALANCE_OF_ABI = [
+  {
+    inputs: [{ name: 'account', type: 'address' }],
+    name: 'balanceOf',
+    outputs: [{ type: 'uint256' }],
+    stateMutability: 'view',
+    type: 'function'
+  }
+] as const;
+
 const projects = new Hono() as AppHono;
-const cache = new CacheService();
 
 // --- SCHEMALAR ---
 const projectListQuerySchema = z.object({
@@ -46,6 +54,7 @@ const liveStreamSchema = z.object({
 // =================== PROYEKT LİSTƏSİ ===================
 projects.get('/', zValidator('query', projectListQuerySchema), async (c) => {
     const db = c.get('db') as Pool;
+    const cache = c.get('cache');
     const { page, limit, sortBy, mode } = c.req.valid('query');
     const isDynamicMode = mode === 'democracy' || mode === 'chaos';
     const cacheKey = `projects:list:v16:p${page}:l${limit}:s${sortBy}:m${mode}`;
@@ -134,6 +143,7 @@ projects.get('/', zValidator('query', projectListQuerySchema), async (c) => {
 // =================== BİR KOMMENTİN CAVABLARINI GƏTİRMƏK ===================
 projects.get('/:address/comments/:commentId/replies', async (c) => {
     const db = c.get('db') as Pool;
+    const cache = c.get('cache');
     const { commentId } = c.req.param();
     const cacheKey = `replies:v1:${commentId}`;
     try {
@@ -160,6 +170,7 @@ projects.get('/:address/comments/:commentId/replies', async (c) => {
 // =================== ANA KOMMENTLƏRİ GƏTİRMƏK ===================
 projects.get('/:address/comments', async (c) => {
     const db = c.get('db') as Pool;
+    const cache = c.get('cache');
     const projectAddress = c.req.param('address').toLowerCase();
     const cacheKey = `comments:v3:${projectAddress}`;
     try {
@@ -188,6 +199,7 @@ projects.get('/:address/comments', async (c) => {
 // =================== KOMMENT YAZMA (REPLY DƏSTƏYİ İLƏ) ===================
 projects.post('/:address/comments', zValidator('json', commentSchema), async (c) => {
     const db = c.get('db') as Pool;
+    const cache = c.get('cache');
     const projectAddress = c.req.param('address').toLowerCase();
     const { userAddress, commentText, parentCommentId, turnstileToken } = c.req.valid('json');
     const rateLimitKey = `comment_rl:${userAddress}:${projectAddress}`;
@@ -196,14 +208,21 @@ projects.post('/:address/comments', zValidator('json', commentSchema), async (c)
     if (existingRate) return c.json({ success: false, error: 'Lütfen 60 saniye bekleyin.' }, 429);
 
     try {
-        const client = createPublicClient({ chain: polygonAmoy, transport: http(appConfig.INFURA_AMOY_RPC_URL) });
-        const balance = await client.readContract({ address: projectAddress as `0x${string}`, abi: erc20Abi, functionName: 'balanceOf', args: [userAddress as `0x${string}`] });
+        const rpcUrl = process.env.INFURA_AMOY_RPC_URL;
+        if (!rpcUrl) {
+            console.error('[COMMENT-RPC-ERROR] INFURA_AMOY_RPC_URL is not defined in environment');
+            return c.json({ success: false, error: 'Sunucu yapılandırma hatası.' }, 500);
+        }
+
+        const client = createPublicClient({ chain: polygonAmoy, transport: http(rpcUrl) });
+        const balance = await client.readContract({ address: projectAddress as `0x${string}`, abi: ERC20_BALANCE_OF_ABI, functionName: 'balanceOf', args: [userAddress as `0x${string}`] });
         if (balance === 0n) return c.json({ success: false, error: 'Yorum yapmak için bu projeden token sahibi olmalısınız.' }, 403);
 
         // --- TƏHLÜKƏSİZLİK: DƏRİNLİK LİMİTİ ---
         if (parentCommentId) {
             const parentComment = await db.query('SELECT parent_comment_id FROM comments WHERE id = $1', [parentCommentId]);
-            if (parentComment.rowCount > 0 && parentComment.rows[0].parent_comment_id !== null) {
+            const parentCount = parentComment.rowCount ?? 0;
+            if (parentCount > 0 && parentComment.rows[0]?.parent_comment_id !== null) {
                 return c.json({ success: false, error: 'Replies to replies are not allowed.' }, 403);
             }
         }
@@ -231,12 +250,14 @@ projects.post('/:address/comments', zValidator('json', commentSchema), async (c)
 // =================== CANLI YAYIN ===================
 projects.post('/:address/set-live-stream', zValidator('json', liveStreamSchema), async (c) => {
     const db = c.get('db') as Pool;
+    const cache = c.get('cache');
     const contractAddress = c.req.param('address').toLowerCase();
     const { liveStreamUrl, signature, message, turnstileToken } = c.req.valid('json');
     try {
-        if (appConfig.TURNSTILE_SECRET) {
+        const turnstileSecret = process.env.TURNSTILE_SECRET;
+        if (turnstileSecret) {
             const form = new URLSearchParams();
-            form.append('secret', appConfig.TURNSTILE_SECRET);
+            form.append('secret', turnstileSecret);
             form.append('response', turnstileToken);
             const ip = c.req.header('CF-Connecting-IP') || '';
             if (ip) form.append('remoteip', ip);
@@ -262,6 +283,7 @@ projects.post('/:address/set-live-stream', zValidator('json', liveStreamSchema),
 // =================== TEKİL PROYEKT DETAYI (ən sonuncu çünki ən ümumi route-dur) ===================
 projects.get('/:address', async (c) => {
     const db = c.get('db') as Pool;
+    const cache = c.get('cache');
     const address = c.req.param('address').toLowerCase();
     const cacheKey = `project:detail:v4:${address}`;
     try {

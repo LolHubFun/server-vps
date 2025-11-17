@@ -1,8 +1,10 @@
 // packages/worker/src/utils/rpc-handler.ts - "PROJECT SECRET" İLE GÜVENLİ HALE GETİRİLMİŞ NİHAİ VERSİYON
 
-import { createPublicClient, http, PublicClient } from 'viem';
+import { createPublicClient, http } from 'viem';
 import { polygonAmoy, mainnet, bsc, avalanche, base, arbitrum } from 'viem/chains';
 import type { Env } from '../types.js';
+
+type AnyPublicClient = ReturnType<typeof createPublicClient>;
 
 const CHAIN_CONFIGS = {
   [polygonAmoy.id]: {
@@ -47,44 +49,40 @@ function getAuthenticatedRpcUrl(env: Env, rpcUrlSecretName: keyof Env): string {
         throw new Error(`CRITICAL: RPC URL secret '${rpcUrlSecretName}' is not defined in Cloudflare environment.`);
     }
 
-    // Eğer Project Secret tanımlı DEĞİLSE, normal URL'i döndür.
-    if (!projectSecret) {
-        console.warn(`[RPC-SECURITY] INFURA_PROJECT_SECRET is not set. Using unauthenticated RPC endpoint. This is not recommended for production.`);
-        return rpcUrl;
+    // NOT: viem, URL içinde basic auth credential (https://:secret@host/...) kullanımına izin vermiyor.
+    // Bu yüzden şimdilik secret tanımlı olsa bile URL'i değiştirmiyoruz.
+    if (projectSecret) {
+        console.warn('[RPC-SECURITY] INFURA_PROJECT_SECRET is set but cannot be embedded into the URL with viem. Using plain RPC URL instead.');
     }
 
-    // Eğer Project Secret TANIMLIYSA, güvenli URL'i oluştur.
-    // Örnek URL: https://polygon-amoy.infura.io/v3/YOUR_ID
-    // Güvenli URL: https://:YOUR_SECRET@polygon-amoy.infura.io/v3/YOUR_ID
-    const urlParts = rpcUrl.split('://');
-    const protocol = urlParts[0];
-    const restOfUrl = urlParts[1];
-    
-    return `${protocol}://:${projectSecret}@${restOfUrl}`;
+    return rpcUrl;
 }
 
 
-export async function getPublicClientWithFallback(chainId: number, env: Env, userRpcUrl?: string): Promise<PublicClient> {
+export async function getPublicClientWithFallback(chainId: number, env: Env, userRpcUrl?: string): Promise<AnyPublicClient> {
   const config = CHAIN_CONFIGS[chainId] || CHAIN_CONFIGS[polygonAmoy.id];
   
   try {
     // ⭐ DEĞİŞİKLİK BURADA: Artık güvenli URL'i oluşturan fonksiyonu çağırıyoruz.
     const fallbackRpcUrl = getAuthenticatedRpcUrl(env, config.fallbackRpcSecretName);
 
-    // Eşzamanlı istekler (aynı kalıyor)
-    const clients = await Promise.allSettled([
-      createUserClient(chainId, userRpcUrl, config.timeout),
-      createFallbackClient(chainId, fallbackRpcUrl, config.timeout)
-    ]);
-    
-    const successfulClient = clients.find(result => result.status === 'fulfilled' && result.value !== null);
-
-    if (successfulClient && successfulClient.status === 'fulfilled' && successfulClient.value) {
-      console.log(`[RPC-HANDLER] Successfully connected to RPC for chain ${chainId}.`);
-      return successfulClient.value;
+    // Önce kullanıcı RPC'sini dene
+    if (userRpcUrl) {
+      try {
+        const userClient = await createUserClient(chainId, userRpcUrl, config.timeout);
+        if (userClient) {
+          console.log(`[RPC-HANDLER] Successfully connected to user RPC for chain ${chainId}.`);
+          return userClient;
+        }
+      } catch (userErr) {
+        console.warn(`[RPC-HANDLER] User RPC failed for chain ${chainId}:`, userErr);
+      }
     }
-    
-    throw new Error('All primary RPC connections failed or timed out.');
+
+    // Kullanıcı RPC başarısızsa fallback'e geç
+    const fallbackClient = await createFallbackClient(chainId, fallbackRpcUrl, config.timeout);
+    console.log(`[RPC-HANDLER] Fallback RPC in use for chain ${chainId}.`);
+    return fallbackClient;
     
   } catch (error) {
     console.error(`[RPC-HANDLER-ERROR] Chain ${chainId} için RPC hatası:`, error);
@@ -97,7 +95,7 @@ export async function getPublicClientWithFallback(chainId: number, env: Env, use
 }
 
 // Bu yardımcı fonksiyonlar aynı kalıyor...
-async function createUserClient(chainId: number, userRpcUrl: string | undefined, timeout: number): Promise<PublicClient | null> {
+async function createUserClient(chainId: number, userRpcUrl: string | undefined, timeout: number): Promise<AnyPublicClient | null> {
   if (!userRpcUrl) return null;
 
   const client = createPublicClient({
@@ -106,17 +104,17 @@ async function createUserClient(chainId: number, userRpcUrl: string | undefined,
   });
 
   await client.getBlockNumber(); // Bağlantıyı test et
-  return client;
+  return client as AnyPublicClient;
 }
 
-async function createFallbackClient(chainId: number, rpcUrl: string, timeout: number): Promise<PublicClient> {
+async function createFallbackClient(chainId: number, rpcUrl: string, timeout: number): Promise<AnyPublicClient> {
   const client = createPublicClient({
     chain: getChainById(chainId),
     transport: http(rpcUrl, { timeout })
   });
 
   await client.getBlockNumber(); // Bağlantıyı test et
-  return client;
+  return client as AnyPublicClient;
 }
 
 function getChainById(chainId: number) {
