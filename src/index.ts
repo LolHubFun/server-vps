@@ -48,6 +48,16 @@ app.use('*', async (c, next) => {
 
 app.use('/uploads/*', serveStatic({ root: './' }));
 
+app.get('/health', async (c) => {
+    try {
+        await pool.query('SELECT 1');
+        return c.json({ status: 'ok' });
+    } catch (error) {
+        console.error('[HEALTH-ERROR]', error);
+        return c.json({ status: 'error' }, 500);
+    }
+});
+
 app.route('/api/projects', projectEndpoints);
 app.route('/api/ranking', rankingEndpoints);
 app.route('/api/home', homeEndpoints);
