@@ -2,21 +2,21 @@
 
 import { Env } from '../types.js';
 
-// Bu yardımcı fonksiyon aynı kalıyor, çünkü API adresleri değişmedi.
-function getApiUrlForChain(chainId: number): string {
-    switch (chainId) {
-        case 1:       return 'https://api.etherscan.io/api';
-        case 80002:   return 'https://api-amoy.polygonscan.com/api';
-        case 137:     return 'https://api.polygonscan.com/api';
-        case 56:      return 'https://api.bscscan.com/api';
-        case 43114:   return 'https://api.snowtrace.io/api';
-        case 8453:    return 'https://api.basescan.org/api';
-        case 42161:   return 'https://api.arbiscan.io/api';
-        case 10:      return 'https://api-optimistic.etherscan.io/api';
-        default:
-            // Desteklenmeyen bir chainId gelirse hata fırlatmak en doğrusu.
-            throw new Error(`Unsupported chainId for verification: ${chainId}`);
-    }
+const ETHERSCAN_V2_BASE = 'https://api.etherscan.io/v2/api';
+
+function isSupportedChain(chainId: number): boolean {
+    return [
+        1,        // Ethereum
+        5,        // Goerli (legacy but still mapped)
+        10,       // Optimism
+        56,       // BSC
+        97,       // BSC Testnet
+        137,      // Polygon
+        80002,    // Polygon Amoy
+        43114,    // Avalanche
+        8453,     // Base
+        42161     // Arbitrum
+    ].includes(chainId);
 }
 
 // === ANA FONKSİYONUN GÜNCELLENMİŞ HALİ ===
@@ -29,21 +29,23 @@ export async function verifyProxyContract(env: Env, proxyAddress: string, chainI
         console.error("[VERIFY-V2] ETHERSCAN_API_KEY is not set. Skipping verification.");
         return; // Anahtar yoksa işlemi durdur
     }
+    if (!isSupportedChain(chainId)) {
+        console.warn(`[VERIFY-V2] Chain ${chainId} is not supported by the unified API. Skipping verification.`);
+        return;
+    }
     
     try {
-        // Doğru API URL'ini al
-        const apiUrl = getApiUrlForChain(chainId);
-
-        // API'ye gönderilecek veriyi oluştur. V1 ile aynı parametreleri kullanıyor.
+        // API'ye gönderilecek veriyi oluştur. V2'de zinciri chainid parametresi ile belirtiyoruz.
         const formData = new URLSearchParams({
             apikey: apiKey,
+            chainid: chainId.toString(),
             module: 'contract',
-            action: 'verifyproxycontract',
+            action: 'verifyproxycontractv2',
             address: proxyAddress,
         });
 
         // API isteğini gönder
-        const response = await fetch(apiUrl, {
+        const response = await fetch(ETHERSCAN_V2_BASE, {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: formData.toString(),
