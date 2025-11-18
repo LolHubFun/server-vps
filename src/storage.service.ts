@@ -10,14 +10,13 @@ const UPLOADS_DIR = path.join(projectRoot, 'uploads', 'logos');
 
 /**
  * Verilen bir görsel buffer'ını sunucudaki 'uploads/logos' klasörüne kaydeder.
- * Önceki logoyu siler.
  * @returns Herkesin erişebileceği (public) URL.
  */
-type ImageBuffer = ArrayBuffer | Buffer | Uint8Array;
+type ImageBuffer = ArrayBuffer | Buffer;
 
 interface UploadLogoOptions {
   identifier: string;
-  extension?: 'png' | 'jpg';
+  extension?: 'png' | 'jpg' | 'gif';
 }
 
 export async function uploadLogoToServer(
@@ -35,7 +34,7 @@ export async function uploadLogoToServer(
       .replace(/[^a-z0-9-]/g, '-')
       .replace(/-+/g, '-')
       .replace(/^-|-$/g, '') || 'logo';
-    const fileExtension = extension === 'jpg' ? 'jpg' : 'png';
+    const fileExtension = extension;
     const fileName = `${safeIdentifier}-${crypto.randomUUID()}.${fileExtension}`;
     const filePath = path.join(UPLOADS_DIR, fileName);
 
