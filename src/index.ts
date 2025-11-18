@@ -7,7 +7,7 @@ import { Pool } from 'pg';
 import cron from 'node-cron';
 import fileUpload from 'express-fileupload';
 import type { UploadedFile } from 'express-fileupload';
-import imageSize from 'image-size';
+import { imageSize } from 'image-size';
 import 'dotenv/config';
 
 import type { AppHono, Env } from './types.js';

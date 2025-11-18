@@ -75,10 +75,10 @@ function createAuthAwareTransport(rpcUrl: string, env: Env, timeout = 2000) {
     const authHeader = `Basic ${encodeBase64(`${projectId}:${projectSecret}`)}`;
     return http(rpcUrl, {
       timeout,
-      fetch: (input, init) => {
-        const headers = new Headers(init?.headers || {});
-        headers.set('Authorization', authHeader);
-        return fetch(input, { ...init, headers });
+      fetchOptions: {
+        headers: {
+          Authorization: authHeader,
+        },
       },
     });
   }
