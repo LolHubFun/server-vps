@@ -6,9 +6,8 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { Pool } from 'pg';
 import cron from 'node-cron';
 import 'dotenv/config';
-
-// DİKKAT: 'image-size' import'u tamamen kaldırıldı.
-
+import authEndpoints from './endpoints/auth.js';
+import creatorEndpoints from './endpoints/creators.js';
 import type { AppHono, Env } from './types.js';
 import projectEndpoints from './endpoints/projects.js';
 import rankingEndpoints from './endpoints/ranking.js';
@@ -86,6 +85,8 @@ app.post('/api/upload-logo', async (c) => {
 app.route('/api/projects', projectEndpoints);
 app.route('/api/ranking', rankingEndpoints);
 app.route('/api/home', homeEndpoints);
+app.route('/api/auth', authEndpoints);
+app.route('/api/creators', creatorEndpoints);
 
 cron.schedule('*/5 * * * *', () => { updateAllProjectMetrics(pool, cache, env); });
 cron.schedule('*/15 * * * * *', () => { pollForTokenCreatedEvents(pool, cache, env); });

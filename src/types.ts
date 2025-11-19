@@ -27,6 +27,7 @@ export interface Env {
     PUBLIC_HOSTNAME: string;
     ADMIN_SECRET_KEY?: string;
     ADMIN_EMERGENCY_WEBHOOK?: string;
+    JWT_SECRET: string;
     [key: string]: string | undefined;
 }
 
