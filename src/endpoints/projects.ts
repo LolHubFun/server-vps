@@ -1,4 +1,4 @@
-// packages/worker/src/endpoints/projects.ts - REPLY VE PRE-SAVE EKLENMİŞ NİHAİ VERSİYA
+// packages/worker/src/endpoints/projects.ts - NİHAİ VERSİYON
 
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
@@ -52,20 +52,17 @@ const liveStreamSchema = z.object({
 });
 
 
-// =================== PRE-SAVE ENDPOINT (YENİ EKLENDİ) ===================
+// =================== PRE-SAVE ENDPOINT ===================
 projects.post('/pre-save', async (c) => {
     const cache = c.get('cache');
     try {
         const body = await c.req.json();
         const { txHash, creatorAddress, socials, name, symbol, logoUrl, turnstileToken } = body;
 
-        // Burada Turnstile token'ını doğrulayabiliriz (isteğe bağlı ama önerilir)
-
         if (!txHash) {
             return c.json({ success: false, error: 'Transaction hash is required.' }, 400);
         }
 
-        // Veriyi cache'e 10 dakika süreyle kaydet
         await cache.set(`presave:${txHash}`, { name, symbol, logoUrl, socials, creatorAddress }, 600);
         
         console.log(`[PRE-SAVE] Cached data for tx: ${txHash}`);
@@ -162,6 +159,66 @@ projects.get('/', zValidator('query', projectListQuerySchema), async (c) => {
     } catch (e: any) {
         console.error('[API-PROJECTS-ERROR]', e.message);
         return c.json({ success: false, error: 'Projeler yüklenemedi.' }, 500);
+    }
+});
+
+// =================== YENİ EKLENDİ: TRADES GEÇMİŞİ (REDIS CACHE İLE) ===================
+projects.get('/:address/trades', async (c) => {
+    const db = c.get('db') as Pool;
+    const cache = c.get('cache');
+    const address = c.req.param('address').toLowerCase();
+    
+    // 1. Önce Redis'e bak (10 saniyelik kısa cache - canlı hissi için)
+    const cacheKey = `trades:history:${address}`;
+    const cachedTrades = await cache.get(cacheKey);
+    if (cachedTrades) {
+        return c.json({ success: true, trades: cachedTrades });
+    }
+
+    try {
+        // 2. Redis boşsa Veritabanından çek (project_events tablosu)
+        const result = await db.query(
+            `SELECT 
+                tx_hash, 
+                block_number, 
+                created_at, 
+                event_data 
+             FROM project_events 
+             WHERE contract_address = $1 
+               AND event_name = 'Invested'
+             ORDER BY block_number DESC 
+             LIMIT 50`,
+            [address]
+        );
+
+        // 3. Veriyi Frontend formatına çevir
+        const trades = result.rows.map(row => {
+            // event_data yapısı: { args: { buyer, amountIn, tokensOut, ... } }
+            const data = row.event_data; 
+            const args = data.args || {};
+            
+            // Dizi veya Obje formatını güvenli şekilde al
+            const buyer = args.buyer || args[0] || '0x00';
+            const amountIn = args.amountIn || args[1] || '0';
+            const tokensOut = args.tokensOut || args[2] || '0';
+            
+            return {
+                key: `${row.tx_hash}-${row.block_number}`,
+                txHash: row.tx_hash,
+                timestamp: row.created_at,
+                buyer: buyer,
+                amountIn: amountIn.toString(), // BigInt'i string'e çevir
+                tokensOut: tokensOut.toString(), // BigInt'i string'e çevir
+            };
+        });
+
+        // 4. Redis'e kaydet (10 saniye)
+        await cache.set(cacheKey, trades, 10);
+
+        return c.json({ success: true, trades });
+    } catch (error) {
+        console.error(`[API-TRADES-ERROR] ${address}:`, error);
+        return c.json({ success: false, error: 'İşlem geçmişi alınamadı.' }, 500);
     }
 });
 
