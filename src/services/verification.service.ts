@@ -4,19 +4,32 @@ import { Env } from '../types.js';
 
 const ETHERSCAN_V2_BASE = 'https://api.etherscan.io/v2/api';
 
-function isSupportedChain(chainId: number): boolean {
-    return [
-        1,        // Ethereum
-        5,        // Goerli (legacy but still mapped)
-        10,       // Optimism
-        56,       // BSC
-        97,       // BSC Testnet
-        137,      // Polygon
-        80002,    // Polygon Amoy
-        43114,    // Avalanche
-        8453,     // Base
-        42161     // Arbitrum
-    ].includes(chainId);
+const V2_SUPPORTED_CHAIN_IDS = new Set([
+    1,      // Ethereum
+    5,      // Goerli
+    10,     // Optimism
+    56,     // BSC Mainnet
+    97,     // BSC Testnet
+    137,    // Polygon Mainnet
+    43114,  // Avalanche C-Chain
+    8453,   // Base
+    42161   // Arbitrum One
+]);
+
+function getLegacyApiUrlForChain(chainId: number): string | null {
+    switch (chainId) {
+        case 137:     return 'https://api.polygonscan.com/api';
+        case 80002:   return 'https://api-amoy.polygonscan.com/api';
+        case 56:      return 'https://api.bscscan.com/api';
+        case 97:      return 'https://api-testnet.bscscan.com/api';
+        case 43114:   return 'https://api.snowtrace.io/api';
+        case 8453:    return 'https://api.basescan.org/api';
+        case 42161:   return 'https://api.arbiscan.io/api';
+        case 10:      return 'https://api-optimistic.etherscan.io/api';
+        case 5:       return 'https://api-goerli.etherscan.io/api';
+        case 1:       return 'https://api.etherscan.io/api';
+        default:      return null;
+    }
 }
 
 // === ANA FONKSİYONUN GÜNCELLENMİŞ HALİ ===
@@ -29,23 +42,30 @@ export async function verifyProxyContract(env: Env, proxyAddress: string, chainI
         console.error("[VERIFY-V2] ETHERSCAN_API_KEY is not set. Skipping verification.");
         return; // Anahtar yoksa işlemi durdur
     }
-    if (!isSupportedChain(chainId)) {
-        console.warn(`[VERIFY-V2] Chain ${chainId} is not supported by the unified API. Skipping verification.`);
-        return;
-    }
     
     try {
-        // API'ye gönderilecek veriyi oluştur. V2'de zinciri chainid parametresi ile belirtiyoruz.
+        const useV2 = V2_SUPPORTED_CHAIN_IDS.has(chainId);
+        let targetUrl = ETHERSCAN_V2_BASE;
         const formData = new URLSearchParams({
             apikey: apiKey,
-            chainid: chainId.toString(),
             module: 'contract',
-            action: 'verifyproxycontractv2',
             address: proxyAddress,
         });
 
-        // API isteğini gönder
-        const response = await fetch(ETHERSCAN_V2_BASE, {
+        if (useV2) {
+            formData.append('chainid', chainId.toString());
+            formData.append('action', 'verifyproxycontractv2');
+        } else {
+            const legacyUrl = getLegacyApiUrlForChain(chainId);
+            if (!legacyUrl) {
+                console.warn(`[VERIFY-V2] No verification endpoint defined for chain ${chainId}. Skipping.`);
+                return;
+            }
+            targetUrl = legacyUrl;
+            formData.append('action', 'verifyproxycontract');
+        }
+
+        const response = await fetch(targetUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: formData.toString(),
