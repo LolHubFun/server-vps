@@ -50,7 +50,6 @@ const liveStreamSchema = z.object({
   }, { message: 'Only YouTube or Twitch links are allowed.' }),
   signature: z.string(),
   message: z.string(),
-  turnstileToken: z.string().min(5),
 });
 
 
@@ -335,22 +334,9 @@ projects.post('/:address/set-live-stream', zValidator('json', liveStreamSchema),
     const db = c.get('db') as Pool;
     const cache = c.get('cache');
     const contractAddress = c.req.param('address').toLowerCase();
-    const { liveStreamUrl, signature, message, turnstileToken } = c.req.valid('json');
+    const { liveStreamUrl, signature, message } = c.req.valid('json');
     
     try {
-        // Turnstile Doğrulaması
-        const turnstileSecret = process.env.TURNSTILE_SECRET;
-        if (turnstileSecret) {
-            const form = new URLSearchParams();
-            form.append('secret', turnstileSecret);
-            form.append('response', turnstileToken);
-            const ip = c.req.header('CF-Connecting-IP') || '';
-            if (ip) form.append('remoteip', ip);
-            const resp = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', { method: 'POST', body: form });
-            const data = await resp.json() as any;
-            if (!data.success) return c.json({ success: false, error: 'Turnstile doğrulaması başarısız.' }, 403);
-        }
-
         // İmza Doğrulaması
         const signerAddress = await recoverMessageAddress({ message, signature: signature as `0x${string}` });
         
