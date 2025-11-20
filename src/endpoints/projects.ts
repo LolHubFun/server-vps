@@ -163,21 +163,16 @@ projects.get('/', zValidator('query', projectListQuerySchema), async (c) => {
     }
 });
 
-// =================== YENİ EKLENDİ: TRADES GEÇMİŞİ (REDIS CACHE İLE) ===================
+// =================== TRADES GEÇMİŞİ (PAGINATION DESTEKLİ) ===================
 projects.get('/:address/trades', async (c) => {
     const db = c.get('db') as Pool;
-    const cache = c.get('cache');
     const address = c.req.param('address').toLowerCase();
-    
-    // 1. Önce Redis'e bak (10 saniyelik kısa cache - canlı hissi için)
-    const cacheKey = `trades:history:${address}`;
-    const cachedTrades = await cache.get(cacheKey);
-    if (cachedTrades) {
-        return c.json({ success: true, trades: cachedTrades });
-    }
+    const pageParam = Number(c.req.query('page') || '1');
+    const page = Number.isFinite(pageParam) && pageParam > 0 ? pageParam : 1;
+    const limit = 50;
+    const offset = (page - 1) * limit;
 
     try {
-        // 2. Redis boşsa Veritabanından çek (project_events tablosu)
         const result = await db.query(
             `SELECT 
                 tx_hash, 
@@ -188,35 +183,29 @@ projects.get('/:address/trades', async (c) => {
              WHERE contract_address = $1 
                AND event_name = 'Invested'
              ORDER BY block_number DESC 
-             LIMIT 50`,
-            [address]
+             LIMIT $2 OFFSET $3`,
+            [address, limit, offset]
         );
 
-        // 3. Veriyi Frontend formatına çevir
         const trades = result.rows.map(row => {
-            // event_data yapısı: { args: { buyer, amountIn, tokensOut, ... } }
-            const data = row.event_data; 
+            const data = row.event_data;
             const args = data.args || {};
-            
-            // Dizi veya Obje formatını güvenli şekilde al
+
             const buyer = args.buyer || args[0] || '0x00';
             const amountIn = args.amountIn || args[1] || '0';
             const tokensOut = args.tokensOut || args[2] || '0';
-            
+
             return {
                 key: `${row.tx_hash}-${row.block_number}`,
                 txHash: row.tx_hash,
                 timestamp: row.created_at,
                 buyer: buyer,
-                amountIn: amountIn.toString(), // BigInt'i string'e çevir
-                tokensOut: tokensOut.toString(), // BigInt'i string'e çevir
+                amountIn: amountIn.toString(),
+                tokensOut: tokensOut.toString(),
             };
         });
 
-        // 4. Redis'e kaydet (10 saniye)
-        await cache.set(cacheKey, trades, 10);
-
-        return c.json({ success: true, trades });
+        return c.json({ success: true, trades, hasMore: trades.length === limit });
     } catch (error) {
         console.error(`[API-TRADES-ERROR] ${address}:`, error);
         return c.json({ success: false, error: 'İşlem geçmişi alınamadı.' }, 500);
@@ -250,16 +239,16 @@ projects.get('/:address/comments/:commentId/replies', async (c) => {
     }
 });
 
-// =================== ANA KOMMENTLƏRİ GƏTİRMƏK ===================
+// =================== ANA KOMMENTLƏRİ GƏTİRMƏK (PAGINATION) ===================
 projects.get('/:address/comments', async (c) => {
     const db = c.get('db') as Pool;
-    const cache = c.get('cache');
     const projectAddress = c.req.param('address').toLowerCase();
-    const cacheKey = `comments:v3:${projectAddress}`;
-    try {
-        const cached = await cache.get<any[]>(cacheKey);
-        if (cached) return c.json({ success: true, comments: cached });
+    const pageParam = Number(c.req.query('page') || '1');
+    const page = Number.isFinite(pageParam) && pageParam > 0 ? pageParam : 1;
+    const limit = 20;
+    const offset = (page - 1) * limit;
 
+    try {
         const commentsResult = await db.query(
             `SELECT c.id, c.user_address, c.comment_text, c.created_at, COUNT(r.id) as reply_count
              FROM comments c
@@ -267,12 +256,15 @@ projects.get('/:address/comments', async (c) => {
              WHERE c.project_contract_address = $1 AND c.parent_comment_id IS NULL
              GROUP BY c.id
              ORDER BY c.created_at DESC
-             LIMIT 50`,
-            [projectAddress]
+             LIMIT $2 OFFSET $3`,
+            [projectAddress, limit, offset]
         );
 
-        await cache.set(cacheKey, commentsResult.rows, 120);
-        return c.json({ success: true, comments: commentsResult.rows });
+        return c.json({ 
+            success: true, 
+            comments: commentsResult.rows, 
+            hasMore: commentsResult.rows.length === limit 
+        });
     } catch (error) {
         console.error(`[API-COMMENTS-ERROR] ${projectAddress}:`, error);
         return c.json({ success: false, error: 'Failed to fetch comments' }, 500);

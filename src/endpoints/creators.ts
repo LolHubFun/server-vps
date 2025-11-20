@@ -38,7 +38,8 @@ creators.get('/:address/stats', async (c) => {
 creators.get('/:address/created', async (c) => {
     const db = c.get('db');
     const address = c.req.param('address').toLowerCase();
-    const page = Number(c.req.query('page') || '1');
+    const pageParam = Number(c.req.query('page') || '1');
+    const page = Number.isFinite(pageParam) && pageParam > 0 ? pageParam : 1;
     const limit = 20;
     const offset = (page - 1) * limit;
 
@@ -54,7 +55,7 @@ creators.get('/:address/created', async (c) => {
             [address, limit, offset]
         );
 
-        return c.json({ success: true, projects: result.rows });
+        return c.json({ success: true, projects: result.rows, hasMore: result.rows.length === limit });
     } catch (e) {
         console.error('[CREATOR-PROJECTS-ERROR]', e);
         return c.json({ success: false, error: 'Projeler alınamadı.' }, 500);
