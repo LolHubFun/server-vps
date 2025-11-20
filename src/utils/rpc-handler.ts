@@ -1,7 +1,7 @@
 // packages/worker/src/utils/rpc-handler.ts - "PROJECT SECRET" İLE GÜVENLİ HALE GETİRİLMİŞ NİHAİ VERSİYON
 
 import { createPublicClient, http } from 'viem';
-import { polygonAmoy, mainnet, bsc, avalanche, base, arbitrum } from 'viem/chains';
+import { polygonAmoy, mainnet, bsc, avalanche, base, arbitrum, optimism } from 'viem/chains';
 import type { Env } from '../types.js';
 
 const FALLBACK_LOG_INTERVAL_MS = 60_000;
@@ -38,6 +38,11 @@ const CHAIN_CONFIGS = {
   [arbitrum.id]: {
     name: 'Arbitrum',
     fallbackRpcSecretName: 'INFURA_ARBITRUM_RPC_URL',
+    timeout: 2000
+  },
+  [optimism.id]: {
+    name: 'Optimism',
+    fallbackRpcSecretName: 'OPTIMISM_RPC_URL',
     timeout: 2000
   },
   // Diğer ağlar...
@@ -161,6 +166,7 @@ function getChainById(chainId: number) {
     case bsc.id: return bsc;
     case avalanche.id: return avalanche;
     case base.id: return base;
+    case optimism.id: return optimism;
     case arbitrum.id: return arbitrum;
     default: return polygonAmoy;
   }

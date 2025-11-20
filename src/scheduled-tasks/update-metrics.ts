@@ -31,7 +31,78 @@ export async function updateAllProjectMetrics(db: Pool, cache: CacheService, env
     }
 
     const promises = allMetrics.map(async (m) => {
-      // 1) DB güncellemesi
+      // 1) Holder sayısını project_events tablosundan hesapla (benzersiz buyer adresleri)
+      let holdersCount = m.holdersCount ?? 0;
+      try {
+        const { rows } = await db.query<{ holders: string }>(
+          `SELECT COALESCE(COUNT(DISTINCT COALESCE(
+              event_data->'args'->>'buyer',
+              event_data->'args'->>0
+            )), 0)::text AS holders
+           FROM project_events
+           WHERE contract_address = $1
+             AND event_name = 'Invested'`,
+          [m.contractAddress.toLowerCase()]
+        );
+        if (rows[0]?.holders) {
+          const parsed = Number(rows[0].holders);
+          if (Number.isFinite(parsed)) holdersCount = parsed;
+        }
+      } catch (e) {
+        console.error(`[METRICS-HOLDERS-ERROR] ${m.contractAddress}:`, e);
+      }
+
+      // 2) Son 24 saatin hacmini hesapla (Invested.amountIn + Sold.amountOut)
+      let volume24h = m.volume24h ?? '0';
+      try {
+        const { rows } = await db.query<{ event_name: string; event_data: any }>(
+          `SELECT event_name, event_data
+             FROM project_events
+            WHERE contract_address = $1
+              AND event_name IN ('Invested', 'Sold')
+              AND created_at >= NOW() - INTERVAL '24 hours'`,
+          [m.contractAddress.toLowerCase()]
+        );
+
+        let volume = 0n;
+        for (const row of rows) {
+          const data = row.event_data as any;
+          const args = data?.args ?? {};
+          let raw: any;
+
+          if (row.event_name === 'Invested') {
+            raw = (args as any).amountIn ?? (args as any)[1];
+          } else if (row.event_name === 'Sold') {
+            raw = (args as any).amountOut ?? (args as any)[2];
+          }
+
+          if (raw == null) continue;
+
+          try {
+            let v: bigint;
+            if (typeof raw === 'bigint') {
+              v = raw;
+            } else if (typeof raw === 'number') {
+              v = BigInt(raw);
+            } else if (typeof raw === 'string') {
+              // Destek: hem decimal string hem 0x hex string
+              v = raw.startsWith('0x') || raw.startsWith('0X') ? BigInt(raw) : BigInt(raw);
+            } else {
+              continue;
+            }
+            volume += v;
+          } catch {
+            // Bu satır hatalıysa, sadece o event'i atla
+            continue;
+          }
+        }
+
+        volume24h = volume.toString();
+      } catch (e) {
+        console.error(`[METRICS-VOLUME24H-ERROR] ${m.contractAddress}:`, e);
+      }
+
+      // 3) DB güncellemesi
       await db.query(
         `UPDATE projects
            SET total_raised = $1,
@@ -44,8 +115,8 @@ export async function updateAllProjectMetrics(db: Pool, cache: CacheService, env
         [
           m.totalRaised,
           m.marketCap,
-          m.holdersCount,
-          m.volume24h,
+          holdersCount,
+          volume24h,
           m.priceChange24h,
           m.contractAddress,
         ]

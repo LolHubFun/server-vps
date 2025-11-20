@@ -78,7 +78,7 @@ export async function calculateBatchMetrics(
     });
 
     try {
-      const res = await client.multicall({ contracts: calls, allowFailure: true });
+      const res = await (client as any).multicall({ contracts: calls as any, allowFailure: true }) as any[];
       for (let i = 0; i < list.length; i++) {
         const projectAddress = list[i].contract_address;
         const idx = i * 3;

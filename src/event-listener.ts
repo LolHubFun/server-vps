@@ -99,6 +99,57 @@ export async function handleInvestedEvent(event: EventWithMetadata, db: Pool, ca
   }
 }
 
+export async function handleSoldEvent(event: EventWithMetadata, db: Pool, cache: CacheService, env: Env) {
+  if (processedEvents.size > 50) {
+    const now = Date.now();
+    for (const [key, value] of processedEvents.entries()) {
+      if (now - value.timestamp > 1800000) {
+        processedEvents.delete(key);
+      }
+    }
+  }
+
+  const { blockNumber, transactionHash, logIndex, contractAddress } = event;
+  const eventId = `${transactionHash}_${logIndex}`;
+
+  if (processedEvents.has(eventId)) {
+    console.log(`[REPLAY-DETECTED] Already processed Sold event via in-memory cache: ${eventId}`);
+    return;
+  }
+
+  console.log(`[EVENT-HANDLER] Processing Sold event for ${contractAddress} at block ${blockNumber}`);
+
+  try {
+    const existsResult = await db.query(
+      `SELECT 1 FROM project_events 
+        WHERE tx_hash = $1 
+          AND event_name = 'Sold' 
+          AND contract_address = $2`,
+      [transactionHash, contractAddress.toLowerCase()]
+    );
+    const existsCount = existsResult.rowCount ?? 0;
+
+    if (existsCount > 0) {
+      console.warn(`[DB-REPLAY-DETECTED] Sold event ${eventId} already exists in the database. Skipping.`);
+      processedEvents.set(eventId, { timestamp: Date.now() });
+      return;
+    }
+
+    await db.query(
+      `INSERT INTO project_events (contract_address, block_number, tx_hash, event_name, event_data)
+       VALUES ($1, $2, $3, 'Sold', $4)
+       ON CONFLICT DO NOTHING`,
+      [contractAddress.toLowerCase(), blockNumber.toString(), transactionHash, JSON.stringify(event.eventData)]
+    );
+
+    console.log(`[EVENT-HANDLER] Successfully processed Sold event for ${contractAddress} at block ${blockNumber}`);
+    processedEvents.set(eventId, { timestamp: Date.now() });
+
+  } catch (error) {
+    console.error(`[EVENT-HANDLER-ERROR] Failed to process Sold event for ${contractAddress} at block ${blockNumber}:`, error);
+  }
+}
+
 export async function runConsistencyCheck(db: Pool, cache: CacheService, env: Env) {
   console.log('[CONSISTENCY-CHECK] Starting optimized consistency check');
 

@@ -316,6 +316,37 @@ export const lolhubFunTokenABI = [
       {
         "indexed": true,
         "internalType": "address",
+        "name": "seller",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "tokensIn",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amountOut",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "blockNumber",
+        "type": "uint256"
+      }
+    ],
+    "name": "Sold",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
         "name": "previousOwner",
         "type": "address"
       },
@@ -744,6 +775,16 @@ export const lolhubFunTokenABI = [
         "type": "address"
       },
       {
+        "internalType": "string",
+        "name": "_nameSuggestion",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "_charSuggestion",
+        "type": "string"
+      },
+      {
         "internalType": "uint256",
         "name": "_minTokensOut",
         "type": "uint256"
@@ -752,6 +793,24 @@ export const lolhubFunTokenABI = [
     "name": "invest",
     "outputs": [],
     "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "_tokenAmount",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "_minEthOut",
+        "type": "uint256"
+      }
+    ],
+    "name": "sell",
+    "outputs": [],
+    "stateMutability": "nonpayable",
     "type": "function"
   },
   {
