@@ -13,7 +13,8 @@ const V2_SUPPORTED_CHAIN_IDS = new Set([
     137,    // Polygon Mainnet
     43114,  // Avalanche C-Chain
     8453,   // Base
-    42161   // Arbitrum One
+    42161,  // Arbitrum One
+    80002   // Polygon Amoy (Artık V2 kullanıyor)
 ]);
 
 function getLegacyApiUrlForChain(chainId: number): string | null {
