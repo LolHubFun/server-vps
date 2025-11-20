@@ -8,11 +8,15 @@ import { getPublicClientWithFallback } from './utils/rpc-handler.js';
 import { verifyProxyContract } from './services/verification.service.js';
 import type { CacheService } from './cache.service.js';
 import type { Env } from './types.js';
+import { handleInvestedEvent, handleSoldEvent } from './event-listener.js';
 
 const evmTokenCreatedAbi = parseAbiItem('event TokenCreated(address indexed tokenAddress, address indexed implementationAddress, address indexed creator, string evolutionMode, uint256 chainId)');
+const investedEventAbi = parseAbiItem('event Invested(address indexed buyer, uint256 amountIn, uint256 tokensOut, address referrer, uint256 blockNumber)');
+const soldEventAbi = parseAbiItem('event Sold(address indexed seller, uint256 tokensIn, uint256 amountOut, uint256 blockNumber)');
 
 // Basit bir kilit mekanizması, aynı anda iki dinleme işleminin çalışmasını engeller
 let isPolling = false; 
+let isPollingProjectEvents = false;
 
 // Yardımcı fonksiyon: chainId'yi isme çevirir
 function getChainInfoById(chainId: number): { id: number; name: string } {
@@ -149,5 +153,105 @@ async function processEvmTokenCreated(log: any, db: Pool, env: Env, cache: Cache
         }
     } catch (e: any) {
         console.error(`[PROCESS-FATAL] CRASH in processEvmTokenCreated for ${log.transactionHash}:`, e.message);
+    }
+}
+
+export async function pollForProjectEvents(db: Pool, cache: CacheService, env: Env) {
+    if (isPollingProjectEvents) {
+        return;
+    }
+    isPollingProjectEvents = true;
+
+    try {
+        const { rows: activeProjects } = await db.query<{ contract_address: string; chain_id: number }>(
+            `SELECT contract_address, chain_id
+               FROM projects
+              WHERE is_finalized = false
+              ORDER BY last_interaction_timestamp DESC
+              LIMIT 10`
+        );
+
+        if (activeProjects.length === 0) {
+            return;
+        }
+
+        for (const project of activeProjects) {
+            const chainId = Number(project.chain_id || 80002);
+
+            let publicClient: any;
+            try {
+                publicClient = await getPublicClientWithFallback(chainId, env);
+            } catch (e) {
+                console.error(`[POLL-PROJECTS] Failed to create public client for ${project.contract_address} on chain ${chainId}:`, e);
+                continue;
+            }
+
+            let latestBlock: bigint;
+            try {
+                latestBlock = await publicClient.getBlockNumber();
+            } catch (e) {
+                console.error(`[POLL-PROJECTS] Failed to read latest block for ${project.contract_address} on chain ${chainId}:`, e);
+                continue;
+            }
+
+            const window = 1000n;
+            const fromBlock = latestBlock > window ? latestBlock - window : 0n;
+
+            try {
+                const investedLogs = await publicClient.getLogs({
+                    address: project.contract_address as `0x${string}`,
+                    event: investedEventAbi,
+                    fromBlock,
+                    toBlock: latestBlock,
+                });
+
+                for (const log of investedLogs) {
+                    await handleInvestedEvent(
+                        {
+                            blockNumber: log.blockNumber,
+                            transactionHash: log.transactionHash,
+                            logIndex: Number(log.logIndex),
+                            contractAddress: log.address as string,
+                            eventData: { args: log.args },
+                        },
+                        db,
+                        cache,
+                        env,
+                    );
+                }
+            } catch (e) {
+                console.error(`[POLL-PROJECTS] Failed to poll Invested events for ${project.contract_address} on chain ${chainId}:`, e);
+            }
+
+            try {
+                const soldLogs = await publicClient.getLogs({
+                    address: project.contract_address as `0x${string}`,
+                    event: soldEventAbi,
+                    fromBlock,
+                    toBlock: latestBlock,
+                });
+
+                for (const log of soldLogs) {
+                    await handleSoldEvent(
+                        {
+                            blockNumber: log.blockNumber,
+                            transactionHash: log.transactionHash,
+                            logIndex: Number(log.logIndex),
+                            contractAddress: log.address as string,
+                            eventData: { args: log.args },
+                        },
+                        db,
+                        cache,
+                        env,
+                    );
+                }
+            } catch (e) {
+                console.error(`[POLL-PROJECTS] Failed to poll Sold events for ${project.contract_address} on chain ${chainId}:`, e);
+            }
+        }
+    } catch (e: any) {
+        console.error('[POLL-PROJECTS-FATAL] Polling project events failed:', e.message || e);
+    } finally {
+        isPollingProjectEvents = false;
     }
 }

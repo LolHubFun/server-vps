@@ -13,7 +13,7 @@ import projectEndpoints from './endpoints/projects.js';
 import rankingEndpoints from './endpoints/ranking.js';
 import homeEndpoints from './endpoints/home.js';
 import { updateAllProjectMetrics } from './scheduled-tasks/update-metrics.js';
-import { pollForTokenCreatedEvents } from './blockchain-listener.js';
+import { pollForTokenCreatedEvents, pollForProjectEvents } from './blockchain-listener.js';
 import { CacheService } from './cache.service.js';
 import { uploadLogoToServer } from './storage.service.js';
 
@@ -90,6 +90,7 @@ app.route('/api/creators', creatorEndpoints);
 
 cron.schedule('*/5 * * * *', () => { updateAllProjectMetrics(pool, cache, env); });
 cron.schedule('*/15 * * * * *', () => { pollForTokenCreatedEvents(pool, cache, env); });
+cron.schedule('*/30 * * * * *', () => { pollForProjectEvents(pool, cache, env); });
 
 const port = Number(process.env.PORT) || 3001;
 serve({ fetch: app.fetch, port }, (info) => {
