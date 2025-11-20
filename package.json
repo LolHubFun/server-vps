@@ -20,7 +20,7 @@
     "jsonwebtoken": "^9.0.2",
     "node-cron": "^3.0.3",
     "pg": "^8.16.3",
-    "replicate": "^0.25.1",
+    "replicate": "^0.25.2",
     "viem": "2.9.23",
     "zod": "^3.23.8"
   },
