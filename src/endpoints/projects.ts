@@ -36,8 +36,10 @@ const commentSchema = z.object({
     turnstileToken: z.string().min(5),
 });
 
+// ⭐ GÜNCELLEME 1: Boş linke izin veren yeni şema
 const liveStreamSchema = z.object({
-  liveStreamUrl: z.string().url().refine((url) => {
+  liveStreamUrl: z.string().optional().refine((url) => {
+    if (!url || url.trim() === '') return true; // ✅ Boş ise geçerli say (Silme işlemi için)
     try {
       const u = new URL(url);
       const host = u.hostname.toLowerCase();
@@ -328,13 +330,15 @@ projects.post('/:address/comments', zValidator('json', commentSchema), async (c)
     }
 });
 
-// =================== CANLI YAYIN ===================
+// ⭐ GÜNCELLEME 2: CANLI YAYIN ENDPOINT (Boş link gelirse siler)
 projects.post('/:address/set-live-stream', zValidator('json', liveStreamSchema), async (c) => {
     const db = c.get('db') as Pool;
     const cache = c.get('cache');
     const contractAddress = c.req.param('address').toLowerCase();
     const { liveStreamUrl, signature, message, turnstileToken } = c.req.valid('json');
+    
     try {
+        // Turnstile Doğrulaması
         const turnstileSecret = process.env.TURNSTILE_SECRET;
         if (turnstileSecret) {
             const form = new URLSearchParams();
@@ -347,17 +351,26 @@ projects.post('/:address/set-live-stream', zValidator('json', liveStreamSchema),
             if (!data.success) return c.json({ success: false, error: 'Turnstile doğrulaması başarısız.' }, 403);
         }
 
+        // İmza Doğrulaması
         const signerAddress = await recoverMessageAddress({ message, signature: signature as `0x${string}` });
+        
+        // Proje Sahibi Kontrolü
         const projectResult = await db.query('SELECT creator_address FROM projects WHERE contract_address = $1', [contractAddress]);
         if (projectResult.rowCount === 0) return c.json({ success: false, error: 'Proje bulunamadı.' }, 404);
+        
         const creatorAddress = projectResult.rows[0].creator_address;
         if (signerAddress.toLowerCase() !== creatorAddress.toLowerCase()) return c.json({ success: false, error: 'Yetkisiz işlem.' }, 403);
-        await db.query('UPDATE projects SET live_stream_url = $1 WHERE contract_address = $2', [liveStreamUrl, contractAddress]);
+        
+        // Veritabanını Güncelle (Link varsa yaz, yoksa NULL yap)
+        const newUrl = (liveStreamUrl && liveStreamUrl.trim() !== '') ? liveStreamUrl : null;
+        
+        await db.query('UPDATE projects SET live_stream_url = $1 WHERE contract_address = $2', [newUrl, contractAddress]);
         await cache.delete(`project:detail:v4:${contractAddress}`);
-        return c.json({ success: true, message: 'Live stream URL updated.' });
+        
+        return c.json({ success: true, message: newUrl ? 'Live stream updated.' : 'Live stream removed.' });
     } catch (error: any) {
         console.error('[SET-LIVE-STREAM-ERROR]', error);
-        return c.json({ success: false, error: 'İmza doğrulanamadı veya bir sunucu hatası oluştu.' }, 500);
+        return c.json({ success: false, error: 'İmza doğrulanamadı veya sunucu hatası.' }, 500);
     }
 });
 
