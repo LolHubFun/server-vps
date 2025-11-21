@@ -29,7 +29,6 @@ function getChainInfoById(chainId: number): { id: number; name: string } {
 
 export async function pollForTokenCreatedEvents(db: Pool, cache: CacheService, env: Env) {
     if (isPolling) {
-        // console.log('[POLL] Polling already in progress. Skipping.'); // Çok fazla log olmaması için yorum satırı yapıldı
         return;
     }
     isPolling = true;
@@ -194,7 +193,8 @@ export async function pollForProjectEvents(db: Pool, cache: CacheService, env: E
                 continue;
             }
 
-            const window = 1000n;
+            // ⭐ KRİTİK DEĞİŞİKLİK: 50000 yerine 2000 yapıldı.
+            const window = 2000n;
             const fromBlock = latestBlock > window ? latestBlock - window : 0n;
 
             try {

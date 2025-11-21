@@ -1,4 +1,6 @@
-// src/index.ts - image-size TAMAMEN KALDIRILMIŞ NİHAİ VERSİYON
+// src/index.ts - NİHAİ VE TEMİZLENMİŞ SÜRÜM
+import './polyfill.js'; // ⭐ EN BAŞTA BU OLMALI (BigInt Düzeltmesi)
+
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
@@ -18,10 +20,10 @@ import { CacheService } from './cache.service.js';
 import { uploadLogoToServer } from './storage.service.js';
 
 const MAX_LOGO_BYTES = 2 * 1024 * 1024; // 2 MB
-// const MAX_LOGO_DIMENSION = 512; // Bu kontrolü geçici olarak devre dışı bıraktık
 
 const app: AppHono = new Hono();
 
+// Veritabanı Bağlantısı
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 pool.on('connect', () => console.log('[DB] Connected to PostgreSQL.'));
 pool.on('error', (err) => console.error('[DB-ERROR]', err));
@@ -29,9 +31,11 @@ pool.on('error', (err) => console.error('[DB-ERROR]', err));
 const env = process.env as unknown as Env;
 const cache = new CacheService();
 
+// CORS Ayarları (Sadece izin verilen domainler)
 const allowedOrigins = ['http://localhost:3000', 'https://rusakh.online', 'https://lolhubfun.pages.dev'];
 app.use('*', cors({ origin: allowedOrigins }));
 
+// Context Enjeksiyonu (DB, Cache, Env her isteğe eklenir)
 app.use('*', async (c, next) => {
     c.set('db', pool);
     c.set('cache', cache);
@@ -39,9 +43,11 @@ app.use('*', async (c, next) => {
     await next();
 });
 
+// Statik Dosyalar (Logolar vb.)
 app.use('/uploads/*', serveStatic({ root: './' }));
 app.get('/health', (c) => c.json({ status: 'ok' }));
 
+// Logo Yükleme Endpoint'i
 app.post('/api/upload-logo', async (c) => {
     try {
         const body = await c.req.parseBody();
@@ -58,8 +64,7 @@ app.post('/api/upload-logo', async (c) => {
 
         const logoBuffer = Buffer.from(await logoFile.arrayBuffer());
 
-        // ⭐⭐⭐ DİKKAT: image-size ile ilgili tüm 'try-catch' bloğu kaldırıldı. ⭐⭐⭐
-
+        // Turnstile Doğrulaması
         const form = new URLSearchParams();
         form.append('secret', turnstileSecret);
         form.append('response', turnstileToken);
@@ -82,15 +87,17 @@ app.post('/api/upload-logo', async (c) => {
     }
 });
 
+// Rota Tanımları
 app.route('/api/projects', projectEndpoints);
 app.route('/api/ranking', rankingEndpoints);
 app.route('/api/home', homeEndpoints);
 app.route('/api/auth', authEndpoints);
 app.route('/api/creators', creatorEndpoints);
 
-cron.schedule('*/5 * * * *', () => { updateAllProjectMetrics(pool, cache, env); });
-cron.schedule('*/15 * * * * *', () => { pollForTokenCreatedEvents(pool, cache, env); });
-cron.schedule('*/30 * * * * *', () => { pollForProjectEvents(pool, cache, env); });
+// Zamanlanmış Görevler (Cron Jobs)
+cron.schedule('*/5 * * * *', () => { updateAllProjectMetrics(pool, cache, env); }); // Her 5 dakikada bir metrikleri güncelle
+cron.schedule('*/15 * * * * *', () => { pollForTokenCreatedEvents(pool, cache, env); }); // Her 15 saniyede bir yeni tokenları kontrol et
+cron.schedule('*/30 * * * * *', () => { pollForProjectEvents(pool, cache, env); }); // Her 30 saniyede bir işlemleri kontrol et
 
 const port = Number(process.env.PORT) || 3001;
 serve({ fetch: app.fetch, port }, (info) => {
