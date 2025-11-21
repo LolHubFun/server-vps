@@ -239,14 +239,16 @@ export async function updateAllProjectMetrics(db: Pool, cache: CacheService, env
                holders_count = $3,
                volume_24h = $4,
                price_change_24h = $5,
+               final_target_wei = COALESCE(final_target_wei, $6),
                last_interaction_timestamp = NOW()
-         WHERE contract_address = $6`,
+         WHERE contract_address = $7`,
         [
           m.totalRaised,
           m.marketCap,
           holdersCount,
           volume24h,
           m.priceChange24h,
+          (m as any).finalTargetWei ?? null,
           m.contractAddress,
         ]
       );

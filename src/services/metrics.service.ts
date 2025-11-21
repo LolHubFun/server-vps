@@ -17,6 +17,7 @@ export interface ProjectMetrics {
   currentPrice: string; // in wei per token (fixed-point 1e18)
   totalSupply: string;
   contractTokenBalance: string;
+  finalTargetWei?: string;
 }
 
 /**
@@ -76,6 +77,7 @@ export async function calculateBatchMetrics(
         { ...contract, functionName: 'totalRaised' },
         { ...contract, functionName: 'totalSupply' },
         { ...contract, functionName: 'balanceOf', args: [project.contract_address as `0x${string}`] },
+        { ...contract, functionName: 'finalTargetWei' },
       ];
     });
 
@@ -83,14 +85,16 @@ export async function calculateBatchMetrics(
       const res = await (client as any).multicall({ contracts: calls as any, allowFailure: true }) as any[];
       for (let i = 0; i < list.length; i++) {
         const projectAddress = list[i].contract_address;
-        const idx = i * 3;
+        const idx = i * 4;
         const totalRaisedResult = res[idx];
         const totalSupplyResult = res[idx + 1];
         const contractBalanceResult = res[idx + 2];
+        const finalTargetWeiResult = res[idx + 3];
         if (
           totalRaisedResult.status === 'failure' ||
           totalSupplyResult.status === 'failure' ||
-          contractBalanceResult.status === 'failure'
+          contractBalanceResult.status === 'failure' ||
+          finalTargetWeiResult.status === 'failure'
         ) {
           console.error(`[METRICS-MULTICALL-FAILURE][chain=${chainId}] ${projectAddress}`);
           continue;
@@ -98,6 +102,7 @@ export async function calculateBatchMetrics(
         const totalRaised = totalRaisedResult.result as bigint;
         const totalSupply = totalSupplyResult.result as bigint;
         const contractTokenBalance = contractBalanceResult.result as bigint;
+        const finalTargetWei = finalTargetWeiResult.result as bigint;
         const soldSupply = totalSupply - contractTokenBalance;
         // If no tokens have been sold yet, show market cap as 0 to reflect the seed state
         let marketCap: bigint;
@@ -124,6 +129,7 @@ export async function calculateBatchMetrics(
           currentPrice: currentPriceCalc.toString(),
           totalSupply: totalSupply.toString(),
           contractTokenBalance: contractTokenBalance.toString(),
+          finalTargetWei: finalTargetWei.toString(),
         });
       }
     } catch (e) {
