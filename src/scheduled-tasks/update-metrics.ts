@@ -239,7 +239,10 @@ export async function updateAllProjectMetrics(db: Pool, cache: CacheService, env
                holders_count = $3,
                volume_24h = $4,
                price_change_24h = $5,
-               final_target_wei = COALESCE(final_target_wei, $6),
+               final_target_wei = CASE
+                 WHEN final_target_wei IS NULL OR final_target_wei = 0 THEN $6
+                 ELSE final_target_wei
+               END,
                last_interaction_timestamp = NOW()
          WHERE contract_address = $7`,
         [
