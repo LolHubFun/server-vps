@@ -128,7 +128,7 @@ export async function updateAllProjectMetrics(db: Pool, cache: CacheService, env
       const snapKey = `prices:${m.chainId}:${m.contractAddress.toLowerCase()}:${hourKey}`;
       const snapVal = JSON.stringify({ price: m.currentPrice, ts: now.toISOString() });
       // ~8 gün TTL
-      await cache.set(snapKey, snapVal, 60 * 60 * 24 * 8);
+      await cache.set(snapKey, snapVal, 60 * 60 * 24 * 40);
 
       // Yardımcı: belirli saat farkı için snapshot getir
       const getSnapshotPrice = async (hoursBack: number): Promise<bigint | null> => {
@@ -144,8 +144,10 @@ export async function updateAllProjectMetrics(db: Pool, cache: CacheService, env
 
       // 3) 2h ve 1w değişim hesapla (yakın snapshot bulunamazsa 0)
       const curPrice = (() => { try { return BigInt(m.currentPrice); } catch { return 0n; } })();
+      const price1h = await getSnapshotPrice(1);
       const price2h = await getSnapshotPrice(2);
       const price1w = await getSnapshotPrice(24 * 7);
+      const price30d = await getSnapshotPrice(24 * 30);
 
       const pct = (prev: bigint | null): number => {
         if (!prev || prev === 0n) return 0;
@@ -153,12 +155,14 @@ export async function updateAllProjectMetrics(db: Pool, cache: CacheService, env
         return (diff / Number(prev)) * 100;
       };
 
+      const pc1h = pct(price1h);
       const pc2h = pct(price2h);
       const pc1w = pct(price1w);
+      const pc30d = pct(price30d);
 
       // 4) Sidecar değişim kayıtları
       const sidecarKey = `pchange:${m.contractAddress.toLowerCase()}`;
-      await cache.set(sidecarKey, { pc2h, pc1w, updatedAt: now.toISOString() }, 60 * 10);
+      await cache.set(sidecarKey, { pc1h, pc2h, pc1w, pc30d, updatedAt: now.toISOString() }, 60 * 10);
     });
 
     await Promise.all(promises);
