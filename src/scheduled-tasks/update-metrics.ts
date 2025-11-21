@@ -5,6 +5,135 @@ import { calculateBatchMetrics } from '../services/metrics.service.js';
 import type { Env } from '../types.js';
 import type { CacheService } from '../cache.service.js';
 
+type TopHolderRow = {
+  address: string;
+  percentage: number;
+  tag?: string;
+  is_contract?: boolean;
+};
+
+const toBigIntSafe = (value: unknown): bigint => {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return 0n;
+    return BigInt(Math.trunc(value));
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return 0n;
+    try {
+      return trimmed.startsWith('0x') || trimmed.startsWith('0X') ? BigInt(trimmed) : BigInt(trimmed);
+    } catch {
+      return 0n;
+    }
+  }
+  return 0n;
+};
+
+async function computeTopHolders(
+  db: Pool,
+  contractAddress: string,
+  totalSupplyStr: string | undefined,
+  contractTokenBalanceStr: string | undefined,
+  limit: number = 50
+): Promise<TopHolderRow[] | null> {
+  const contract = contractAddress.toLowerCase();
+
+  const totalSupply = toBigIntSafe(totalSupplyStr ?? '0');
+  const contractTokenBalance = toBigIntSafe(contractTokenBalanceStr ?? '0');
+
+  if (totalSupply <= 0n) {
+    return null;
+  }
+
+  let events: { event_name: string; event_data: any }[] = [];
+  try {
+    const { rows } = await db.query<{ event_name: string; event_data: any }>(
+      `SELECT event_name, event_data
+         FROM project_events
+        WHERE contract_address = $1
+          AND event_name IN ('Invested', 'Sold')`,
+      [contract]
+    );
+    events = rows;
+  } catch (e) {
+    console.error(`[METRICS-TOP-HOLDERS-QUERY-ERROR] ${contract}:`, e);
+    return null;
+  }
+
+  const balances = new Map<string, bigint>();
+
+  const addDelta = (addr: unknown, delta: bigint) => {
+    if (delta === 0n) return;
+    if (typeof addr !== 'string') return;
+    const normalized = addr.toLowerCase();
+    if (!normalized.startsWith('0x') || normalized.length !== 42) return;
+    const prev = balances.get(normalized) ?? 0n;
+    balances.set(normalized, prev + delta);
+  };
+
+  for (const row of events) {
+    const data = row.event_data as any;
+    const args = data?.args ?? {};
+
+    if (row.event_name === 'Invested') {
+      const buyer = (args as any).buyer ?? (args as any)[0];
+      const tokensOutRaw = (args as any).tokensOut ?? (args as any)[2];
+      const tokensOut = toBigIntSafe(tokensOutRaw);
+      if (tokensOut > 0n) addDelta(buyer, tokensOut);
+    } else if (row.event_name === 'Sold') {
+      const seller = (args as any).seller ?? (args as any)[0];
+      const tokensInRaw = (args as any).tokensIn ?? (args as any)[1];
+      const tokensIn = toBigIntSafe(tokensInRaw);
+      if (tokensIn > 0n) addDelta(seller, -tokensIn);
+    }
+  }
+
+  const SCALE = 10000n; // 2 ondalık hassasiyet
+  const calcPct = (amount: bigint): number => {
+    if (amount <= 0n || totalSupply <= 0n) return 0;
+    const scaled = (amount * SCALE) / totalSupply;
+    const pct = Number(scaled) / 100;
+    if (!Number.isFinite(pct)) return 0;
+    return Math.max(0, Math.min(100, pct));
+  };
+
+  const holders: TopHolderRow[] = [];
+
+  const bondingPct = calcPct(contractTokenBalance);
+  if (bondingPct > 0) {
+    holders.push({
+      address: contract,
+      percentage: bondingPct,
+      tag: 'Bonding Pool Tokens',
+      is_contract: true,
+    });
+  }
+
+  const walletEntries = Array.from(balances.entries())
+    .filter(([addr, balance]) => balance > 0n && addr !== contract)
+    .sort((a, b) => {
+      if (a[1] === b[1]) return 0;
+      return a[1] > b[1] ? -1 : 1;
+    });
+
+  for (const [addr, balance] of walletEntries.slice(0, limit)) {
+    const pct = calcPct(balance);
+    if (pct <= 0) continue;
+    holders.push({
+      address: addr,
+      percentage: pct,
+      is_contract: false,
+    });
+  }
+
+  if (!holders.length) {
+    return null;
+  }
+
+  return holders;
+}
+
 export async function updateAllProjectMetrics(db: Pool, cache: CacheService, env: Env) {
   console.log('[CRON-METRICS] Starting metrics update...');
   try {
@@ -121,6 +250,28 @@ export async function updateAllProjectMetrics(db: Pool, cache: CacheService, env
           m.contractAddress,
         ]
       );
+
+      // 3b) Top holders (bonding pool + cüzdanlar) snapshot'ı
+      try {
+        const topHolders = await computeTopHolders(
+          db,
+          m.contractAddress,
+          (m as any).totalSupply,
+          (m as any).contractTokenBalance,
+          50
+        );
+        if (topHolders && topHolders.length > 0) {
+          await db.query(
+            `UPDATE projects
+               SET top_holders = $1
+             WHERE contract_address = $2`,
+            [JSON.stringify(topHolders), m.contractAddress.toLowerCase()]
+          );
+        }
+      } catch (e) {
+        // Kolon eksik veya sorgu hatası durumunda metrik cron'unu kırma
+        console.error(`[METRICS-TOP-HOLDERS-ERROR] ${m.contractAddress}:`, e);
+      }
 
       // 2) KV: Saatlik fiyat snapshot yazımı
       const now = new Date();

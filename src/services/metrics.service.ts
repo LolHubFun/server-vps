@@ -15,6 +15,8 @@ export interface ProjectMetrics {
   volume24h: string;
   priceChange24h: number;
   currentPrice: string; // in wei per token (fixed-point 1e18)
+  totalSupply: string;
+  contractTokenBalance: string;
 }
 
 /**
@@ -120,6 +122,8 @@ export async function calculateBatchMetrics(
           volume24h: '0',
           priceChange24h: 0,
           currentPrice: currentPriceCalc.toString(),
+          totalSupply: totalSupply.toString(),
+          contractTokenBalance: contractTokenBalance.toString(),
         });
       }
     } catch (e) {

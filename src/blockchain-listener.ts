@@ -9,10 +9,12 @@ import { verifyProxyContract } from './services/verification.service.js';
 import type { CacheService } from './cache.service.js';
 import type { Env } from './types.js';
 import { handleInvestedEvent, handleSoldEvent } from './event-listener.js';
+import { handleFinalizationLogic } from './services/finalization.service.js';
 
 const evmTokenCreatedAbi = parseAbiItem('event TokenCreated(address indexed tokenAddress, address indexed implementationAddress, address indexed creator, string evolutionMode, uint256 chainId)');
 const investedEventAbi = parseAbiItem('event Invested(address indexed buyer, uint256 amountIn, uint256 tokensOut, address referrer, uint256 blockNumber)');
 const soldEventAbi = parseAbiItem('event Sold(address indexed seller, uint256 tokensIn, uint256 amountOut, uint256 blockNumber)');
+const finalizedEventAbi = parseAbiItem('event ProjectFinalized(address indexed lpPair)');
 
 // Basit bir kilit mekanizması, aynı anda iki dinleme işleminin çalışmasını engeller
 let isPolling = false; 
@@ -247,6 +249,26 @@ export async function pollForProjectEvents(db: Pool, cache: CacheService, env: E
                 }
             } catch (e) {
                 console.error(`[POLL-PROJECTS] Failed to poll Sold events for ${project.contract_address} on chain ${chainId}:`, e);
+            }
+
+            try {
+                const finalizedLogs = await publicClient.getLogs({
+                    address: project.contract_address as `0x${string}`,
+                    event: finalizedEventAbi,
+                    fromBlock,
+                    toBlock: latestBlock,
+                });
+
+                for (const log of finalizedLogs) {
+                    await handleFinalizationLogic(
+                        log.address,
+                        log.args?.lpPair as string,
+                        db,
+                        env
+                    );
+                }
+            } catch (e) {
+                console.error(`[POLL-PROJECTS] Failed to poll Finalized events for ${project.contract_address}:`, e);
             }
         }
     } catch (e: any) {

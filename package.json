@@ -12,6 +12,7 @@
   "dependencies": {
     "@hono/node-server": "^1.19.6",
     "@hono/zod-validator": "^0.2.2",
+    "arweave": "^1.15.7",
     "dotenv": "^16.6.1",
     "express-fileupload": "^1.5.2",
     "hono": "^4.10.6",
